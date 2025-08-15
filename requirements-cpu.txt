@@ -1,0 +1,8 @@
+# CPU 版三件套（不做推理，仅为可能的轻量模型操作保留）
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# 后端无需额外依赖，使用标准库 http.server 与 sqlite3
+
