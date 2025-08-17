@@ -13,14 +13,14 @@
       <div class="search-row">
         <input id="searchInput" type="text" placeholder="搜索模型名/路径…" />
         <div class="tag-filter">
-          <button id="tagDropdownBtn">标签筛选 ▾</button>
+          <button id="tagDropdownBtn" class="btn">标签筛选 ▾</button>
           <div id="tagDropdown" class="dropdown hidden"></div>
         </div>
         <div class="mode-toggle">
           <label><input type="radio" name="tagsMode" value="all" checked> 全包含</label>
           <label><input type="radio" name="tagsMode" value="any"> 任一包含</label>
         </div>
-        <button id="refreshBtn">刷新</button>
+        <button id="refreshBtn" class="btn">刷新数据库</button>
       </div>
     </header>
 
@@ -44,7 +44,6 @@
         <div class="actions">
           <button id="revertBtn">放弃编辑</button>
           <button id="saveBtn">保存</button>
-          <button id="confirmBtn" class="secondary">确认（选择器占位）</button>
         </div>
       </aside>
     </main>
@@ -53,4 +52,3 @@
   <script src="/web/app.js"></script>
 </body>
 </html>
-

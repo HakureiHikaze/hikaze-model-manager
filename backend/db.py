@@ -56,18 +56,15 @@ CREATE TABLE IF NOT EXISTS directories (
   FOREIGN KEY(parent_id) REFERENCES directories(id)
 );
 
+-- v2: 精简 models 结构，移除 dir_path/mtime_ns/updated_at/hash_algo
 CREATE TABLE IF NOT EXISTS models (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL UNIQUE,
-  dir_path TEXT NOT NULL,
   name TEXT,
   type TEXT NOT NULL,
   size_bytes INTEGER,
-  mtime_ns INTEGER,
-  hash_algo TEXT NOT NULL,
   hash_hex TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER,
   meta_json TEXT,
   extra_json TEXT
 );
@@ -92,15 +89,47 @@ CREATE TABLE IF NOT EXISTS model_tags (
 """
 
 
+def _ensure_schema_v2(conn: sqlite3.Connection) -> None:
+    # 读取已有版本
+    try:
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        row = cur.fetchone()
+        ver = int(row["version"]) if row and row.get("version") is not None else None
+    except sqlite3.Error:
+        ver = None
+    # 检查 models 列是否符合 v2
+    def _is_v2() -> bool:
+        try:
+            cur2 = conn.execute("PRAGMA table_info(models)")
+            cols = [r["name"] for r in cur2.fetchall()]
+            expected = ["id","path","name","type","size_bytes","hash_hex","created_at","meta_json","extra_json"]
+            return cols and cols == expected
+        except sqlite3.Error:
+            return False
+    ok = (ver == 2) and _is_v2()
+    if ok:
+        return
+    # 丢弃旧表重建（开发阶段数据无价值）
+    try:
+        conn.executescript(
+            """
+            DROP TABLE IF EXISTS model_tags;
+            DROP TABLE IF EXISTS tags;
+            DROP TABLE IF EXISTS models;
+            DROP TABLE IF EXISTS directories;
+            DROP TABLE IF EXISTS schema_version;
+            """
+        )
+    except sqlite3.Error:
+        pass
+    conn.executescript(SCHEMA_SQL)
+    conn.execute("INSERT INTO schema_version(version) VALUES (?)", (2,))
+
+
 def init_db() -> None:
     conn = get_conn()
     with conn:
-        conn.executescript(SCHEMA_SQL)
-        # init schema_version if empty
-        cur = conn.execute("SELECT COUNT(1) AS c FROM schema_version")
-        row = cur.fetchone()
-        if not row or row["c"] == 0:
-            conn.execute("INSERT INTO schema_version(version) VALUES (?)", (1,))
+        _ensure_schema_v2(conn)
         # ensure system tags exist
         now = int(time.time() * 1000)
         for t in SYSTEM_TAGS:
@@ -174,37 +203,38 @@ def delete_tag(tag_id: int) -> None:
 
 # --- Model helpers ---
 
-def upsert_model(*, path: str, dir_path: str, name: str, type_: str, size_bytes: int, mtime_ns: int,
-                 hash_algo: str, hash_hex: str, created_at_ms: int, meta_json: Optional[str] = None) -> int:
-    if type_ not in SYSTEM_TAGS:
-        type_ = "other"
+def upsert_model(*, path: str, name: str, type_: str, size_bytes: int,
+                 hash_hex: str, created_at_ms: int, meta_json: Optional[str] = None) -> int:
+    # 放宽：允许任意类型字符串（来自 models 根一级子目录）；无法判定时上游应传 'other'
     conn = get_conn()
     now = int(time.time() * 1000)
     with conn:
-        # try update by path
-        cur = conn.execute(
-            "UPDATE models SET dir_path=?, name=?, type=?, size_bytes=?, mtime_ns=?, hash_algo=?, hash_hex=?, updated_at=?, meta_json=? WHERE path=?",
-            (dir_path, name, type_, size_bytes, mtime_ns, hash_algo, hash_hex, now, meta_json, path),
-        )
-        if cur.rowcount == 0:
-            cur = conn.execute(
-                "INSERT INTO models(path, dir_path, name, type, size_bytes, mtime_ns, hash_algo, hash_hex, created_at, updated_at, meta_json)\n                 VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (path, dir_path, name, type_, size_bytes, mtime_ns, hash_algo, hash_hex, created_at_ms, now, meta_json),
+        # 预取旧记录
+        cur = conn.execute("SELECT id, type FROM models WHERE path=?", (path,))
+        row = cur.fetchone()
+        old_id = int(row["id"]) if row else None
+        old_type = row["type"] if row else None
+        if row:
+            conn.execute(
+                "UPDATE models SET name=?, type=?, size_bytes=?, hash_hex=?, meta_json=? WHERE id=?",
+                (name, type_, size_bytes, hash_hex, meta_json, old_id),
             )
-            model_id = int(cur.lastrowid)
+            model_id = old_id
         else:
-            # fetch id
-            cur = conn.execute("SELECT id FROM models WHERE path=?", (path,))
-            model_id = int(cur.fetchone()["id"])
-        # ensure type tag attached
+            cur2 = conn.execute(
+                "INSERT INTO models(path, name, type, size_bytes, hash_hex, created_at, meta_json, extra_json)\n                 VALUES(?,?,?,?,?,?,?,?)",
+                (path, name, type_, size_bytes, hash_hex, created_at_ms, meta_json, None),
+            )
+            model_id = int(cur2.lastrowid)
+            old_type = None
+        # 确保新类型标签存在
         type_tag_id = get_or_create_tag_id(type_)
         conn.execute("INSERT OR IGNORE INTO model_tags(model_id, tag_id) VALUES(?,?)", (model_id, type_tag_id))
-        # remove other system type tags if any (keep only current type)
-        if SYSTEM_TAGS:
-            placeholders = ",".join(["?"] * len(SYSTEM_TAGS))
+        # 如果旧类型不同，移除旧类型标签（避免误删其它用户标签）
+        if old_type and old_type != type_:
             conn.execute(
-                f"DELETE FROM model_tags WHERE model_id=? AND tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders}) AND name <> ?)",
-                (model_id, *SYSTEM_TAGS, type_),
+                "DELETE FROM model_tags WHERE model_id=? AND tag_id IN (SELECT id FROM tags WHERE name=?)",
+                (model_id, old_type),
             )
     return model_id
 
@@ -246,6 +276,12 @@ def get_model_by_id(model_id: int) -> Optional[Dict[str, Any]]:
     return row
 
 
+def get_model_by_path(path: str) -> Optional[Dict[str, Any]]:
+    conn = get_conn()
+    cur = conn.execute("SELECT * FROM models WHERE path=?", (path,))
+    return cur.fetchone()
+
+
 def list_model_tags(model_id: int) -> List[str]:
     cur = get_conn().execute(
         "SELECT t.name FROM model_tags mt JOIN tags t ON mt.tag_id=t.id WHERE mt.model_id=? ORDER BY t.name",
@@ -261,63 +297,52 @@ def query_models(*, q: Optional[str] = None, type_: Optional[str] = None, dir_pa
     where = []
     args: List[Any] = []
     if q:
-        where.append("(name LIKE ? OR path LIKE ?)")
+        where.append("(m.name LIKE ? OR m.path LIKE ?)")
         like = f"%{q}%"
         args.extend([like, like])
     if type_:
-        where.append("type=?")
+        where.append("m.type=?")
         args.append(type_)
-    if dir_path:
-        where.append("dir_path=?")
-        args.append(dir_path)
+    # v2: 不再支持按 dir_path 过滤（字段已移除）
 
     base_sql = "SELECT m.* FROM models m"
     count_sql = "SELECT COUNT(1) AS c FROM models m"
 
+    # 标签过滤：统一使用 EXISTS 子查询，避免多 JOIN 组合引起的意外空结果
     if tags:
-        # normalize tags
         tags = [t.strip().lower() for t in tags if t and t.strip()]
         if tags:
             if tags_mode == 'all':
-                # join per tag and ensure count match
-                idx = 0
-                join_sql = ""
                 for t in tags:
-                    idx += 1
-                    alias = f"mt{idx}"
-                    join_sql += f" JOIN model_tags {alias} ON {alias}.model_id=m.id JOIN tags t{idx} ON {alias}.tag_id=t{idx}.id AND t{idx}.name=?"
+                    where.append("EXISTS (SELECT 1 FROM model_tags mt JOIN tags tg ON mt.tag_id=tg.id WHERE mt.model_id=m.id AND tg.name=?)")
                     args.append(t)
-                base_sql += join_sql
-                count_sql += join_sql
-            else:
-                # any: IN subquery
+            else:  # any
                 placeholders = ",".join(["?"] * len(tags))
-                base_sql += f" WHERE EXISTS (SELECT 1 FROM model_tags mt JOIN tags t ON mt.tag_id=t.id WHERE mt.model_id=m.id AND t.name IN ({placeholders}))"
-                count_sql += f" WHERE EXISTS (SELECT 1 FROM model_tags mt JOIN tags t ON mt.tag_id=t.id WHERE mt.model_id=m.id AND t.name IN ({placeholders}))"
+                where.append(f"EXISTS (SELECT 1 FROM model_tags mt JOIN tags tg ON mt.tag_id=tg.id WHERE mt.model_id=m.id AND tg.name IN ({placeholders}))")
                 args.extend(tags)
 
     if where:
-        base_sql += (" WHERE " if " WHERE " not in base_sql else " AND ") + " AND ".join(where)
-        count_sql += (" WHERE " if " WHERE " not in count_sql else " AND ") + " AND ".join(where)
+        base_sql += " WHERE " + " AND ".join(where)
+        count_sql += " WHERE " + " AND ".join(where)
 
-    # sort mapping
+    # sort mapping（v2: mtime 映射到 created_at）
     sort_map = {
-        'created': 'created_at',
-        'name': 'name',
-        'mtime': 'mtime_ns',
-        'size': 'size_bytes',
-        'type': 'type',
+        'created': 'm.created_at',
+        'name': 'm.name',
+        'mtime': 'm.created_at',
+        'size': 'm.size_bytes',
+        'type': 'm.type',
     }
-    order_col = sort_map.get(sort, 'created_at')
+    order_col = sort_map.get(sort, 'm.created_at')
     order_dir = 'ASC' if order.lower() == 'asc' else 'DESC'
 
     base_sql += f" ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?"
-    args.extend([int(limit), int(offset)])
+    args_with_page = list(args) + [int(limit), int(offset)]
 
-    cur = conn.execute(base_sql, tuple(args))
+    cur = conn.execute(base_sql, tuple(args_with_page))
     items = list(cur.fetchall())
 
-    cur2 = conn.execute(count_sql, tuple(args[:-2])) if len(args) >= 2 else conn.execute(count_sql)
+    cur2 = conn.execute(count_sql, tuple(args))
     total = int(cur2.fetchone()["c"]) if cur2 else 0
 
     return items, total
@@ -325,94 +350,232 @@ def query_models(*, q: Optional[str] = None, type_: Optional[str] = None, dir_pa
 
 # --- New: Tag queries by type and facets ---
 
-def list_tags_by_type(type_: str) -> List[str]:
-    """List distinct tags that are attached to models of given type, excluding the type tag itself."""
+def types_with_counts() -> List[Dict[str, Any]]:
+    """Return available model types with counts (no zero-fill)."""
     conn = get_conn()
-    cur = conn.execute(
-        """
-        SELECT DISTINCT t.name AS name
-        FROM models m
-        JOIN model_tags mt ON mt.model_id = m.id
-        JOIN tags t ON t.id = mt.tag_id
-        WHERE m.type = ? AND t.name <> ?
-        ORDER BY t.name ASC
-        """,
-        (type_, type_),
-    )
-    return [r["name"] for r in cur.fetchall()]
+    cur = conn.execute("SELECT type AS name, COUNT(1) AS cnt FROM models GROUP BY type ORDER BY name ASC")
+    rows = list(cur.fetchall())
+    return [{"name": r["name"], "count": int(r["cnt"]) } for r in rows]
 
 
-def tag_facets(*, type_: Optional[str] = None, q: Optional[str] = None, selected: Optional[List[str]] = None,
-               mode: Literal['all', 'any'] = 'all') -> List[Dict[str, Any]]:
-    """Return tag counts under current filters. Excludes system type tag when type_ specified.
-    Output: [{"name": str, "count": int}]
-    """
+def _first_level_dir(path: str, roots: List[str]) -> str:
+    apath = os.path.abspath(path)
+    for r in roots:
+        rabs = os.path.abspath(r)
+        try:
+            common = os.path.commonpath([os.path.normcase(rabs), os.path.normcase(apath)])
+        except Exception:
+            continue
+        if common == os.path.normcase(rabs):
+            rel = os.path.relpath(apath, rabs)
+            parts = [p for p in rel.replace('\\','/').split('/') if p and p not in ('.','..')]
+            if parts:
+                return parts[0].strip().lower()
+    return 'other'
+
+
+def migrate_types_by_roots(model_roots: List[str]) -> int:
+    """Recompute model type by first-level dir under provided roots; update tags accordingly. Return updated count."""
+    if not model_roots:
+        return 0
+    roots = [os.path.abspath(p) for p in model_roots if isinstance(p, str) and os.path.isdir(p)]
+    if not roots:
+        return 0
     conn = get_conn()
-    filters = []
-    args: List[Any] = []
+    cur = conn.execute("SELECT id, path, type FROM models")
+    rows = list(cur.fetchall())
+    updated = 0
+    now = int(time.time() * 1000)
+    with conn:
+        for row in rows:
+            mid = int(row['id'])
+            old_path = row['path']
+            old_type = row['type']
+            new_type = _first_level_dir(old_path, roots)
+            if new_type != old_type:
+                conn.execute("UPDATE models SET type=? WHERE id=?", (new_type, mid))
+                # 更新标签：移除旧类型，添加新类型
+                if old_type:
+                    conn.execute("DELETE FROM model_tags WHERE model_id=? AND tag_id IN (SELECT id FROM tags WHERE name=?)", (mid, old_type))
+                new_type_tid = get_or_create_tag_id(new_type)
+                conn.execute("INSERT OR IGNORE INTO model_tags(model_id, tag_id) VALUES(?,?)", (mid, new_type_tid))
+                updated += 1
+    return updated
+
+
+def list_tags_by_type(type_: str) -> List[Dict[str, Any]]:
+    """List tags used by models of given type, excluding the type tag itself."""
+    conn = get_conn()
+    cur = conn.execute("""
+        SELECT t.id, t.name, t.color, COUNT(DISTINCT mt.model_id) AS count
+        FROM tags t
+        JOIN model_tags mt ON t.id = mt.tag_id
+        JOIN models m ON mt.model_id = m.id
+        WHERE m.type = ? AND t.name != ?
+        GROUP BY t.id, t.name, t.color
+        ORDER BY count DESC, t.name ASC
+    """, (type_, type_))
+    return [{"id": r["id"], "name": r["name"], "color": r["color"], "count": r["count"]} for r in cur.fetchall()]
+
+
+def tag_facets(*, type_: Optional[str] = None, q: Optional[str] = None,
+               selected: Optional[List[str]] = None, mode: Literal['all', 'any'] = 'all') -> List[Dict[str, Any]]:
+    """Return tag facets for current filter."""
+    conn = get_conn()
+
+    # 构建基础查询
+    base_where = []
+    args = []
+
     if type_:
-        filters.append("m.type = ?")
+        base_where.append("m.type = ?")
         args.append(type_)
+
     if q:
-        filters.append("(m.name LIKE ? OR m.path LIKE ?)")
+        base_where.append("(m.name LIKE ? OR m.path LIKE ?)")
         like = f"%{q}%"
         args.extend([like, like])
 
-    # Build selected-tags constraint
-    join_selected = ""
+    # 处理已选择的标签
     if selected:
         selected = [t.strip().lower() for t in selected if t and t.strip()]
         if selected:
             if mode == 'all':
-                idx = 0
-                for tname in selected:
-                    idx += 1
-                    alias = f"smt{idx}"
-                    join_selected += f" JOIN model_tags {alias} ON {alias}.model_id=m.id JOIN tags st{idx} ON {alias}.tag_id=st{idx}.id AND st{idx}.name=?"
-                    args.append(tname)
+                # 所有选中标签都必须存在
+                for i, tag in enumerate(selected):
+                    alias = f"mt_sel_{i}"
+                    base_where.append(f"""
+                        EXISTS (
+                            SELECT 1 FROM model_tags {alias} 
+                            JOIN tags t_sel_{i} ON {alias}.tag_id = t_sel_{i}.id 
+                            WHERE {alias}.model_id = m.id AND t_sel_{i}.name = ?
+                        )
+                    """)
+                    args.append(tag)
             else:
+                # 任一选中标签存在即可
                 placeholders = ",".join(["?"] * len(selected))
-                filters.append(f"EXISTS (SELECT 1 FROM model_tags smt JOIN tags st ON smt.tag_id=st.id WHERE smt.model_id=m.id AND st.name IN ({placeholders}))")
+                base_where.append(f"""
+                    EXISTS (
+                        SELECT 1 FROM model_tags mt_sel 
+                        JOIN tags t_sel ON mt_sel.tag_id = t_sel.id 
+                        WHERE mt_sel.model_id = m.id AND t_sel.name IN ({placeholders})
+                    )
+                """)
                 args.extend(selected)
 
-    where_sql = (" WHERE " + " AND ".join(filters)) if filters else ""
+    where_clause = " AND ".join(base_where) if base_where else "1=1"
 
+    # 查询标签计数
     sql = f"""
-        SELECT t.name AS name, COUNT(1) AS cnt
-        FROM (
-            SELECT m.id AS id
-            FROM models m
-            {join_selected}
-            {where_sql}
-        ) AS sub
-        JOIN model_tags mt ON mt.model_id = sub.id
-        JOIN tags t ON t.id = mt.tag_id
-        {{exclude_type}}
-        GROUP BY t.name
-        ORDER BY t.name ASC
+        SELECT t.id, t.name, t.color, COUNT(DISTINCT m.id) AS count
+        FROM tags t
+        JOIN model_tags mt ON t.id = mt.tag_id
+        JOIN models m ON mt.model_id = m.id
+        WHERE {where_clause}
+        GROUP BY t.id, t.name, t.color
+        HAVING count > 0
+        ORDER BY count DESC, t.name ASC
     """
 
-    exclude_type_clause = ""
-    if type_:
-        exclude_type_clause = "WHERE t.name <> ?"
-        args2 = tuple(args) + (type_,)
-    else:
-        args2 = tuple(args)
-
-    cur = conn.execute(sql.replace("{exclude_type}", exclude_type_clause), args2)
-    return [{"name": r["name"], "count": int(r["cnt"]) } for r in cur.fetchall()]
+    cur = conn.execute(sql, args)
+    return [{"id": r["id"], "name": r["name"], "color": r["color"], "count": r["count"]} for r in cur.fetchall()]
 
 
-def types_with_counts() -> List[Dict[str, Any]]:
-    """Return available model types with counts."""
+def list_tags() -> List[Dict[str, Any]]:
+    """List all tags with their usage counts."""
     conn = get_conn()
-    cur = conn.execute("SELECT type AS name, COUNT(1) AS cnt FROM models GROUP BY type ORDER BY name ASC")
-    rows = list(cur.fetchall())
-    # Ensure all SYSTEM_TAGS present with zero count if absent
-    existing = {r["name"] for r in rows}
-    for t in sorted(SYSTEM_TAGS):
-        if t not in existing:
-            rows.append({"name": t, "cnt": 0})
-    # sort again by name
-    rows = sorted(rows, key=lambda r: r["name"])  # type: ignore
-    return [{"name": r["name"], "count": int(r["cnt"]) } for r in rows]
+    cur = conn.execute("""
+        SELECT t.id, t.name, t.color, t.created_at, COUNT(mt.model_id) AS count
+        FROM tags t
+        LEFT JOIN model_tags mt ON t.id = mt.tag_id
+        GROUP BY t.id, t.name, t.color, t.created_at
+        ORDER BY t.name ASC
+    """)
+    return [{"id": r["id"], "name": r["name"], "color": r["color"],
+             "created_at": r["created_at"], "count": r["count"]} for r in cur.fetchall()]
+
+
+def create_tag(name: str, color: Optional[str] = None) -> Dict[str, Any]:
+    """Create a new tag."""
+    name = name.strip().lower()
+    if not name:
+        raise ValueError("Tag name cannot be empty")
+
+    conn = get_conn()
+    now = int(time.time() * 1000)
+
+    with conn:
+        # 检查是否已存在
+        cur = conn.execute("SELECT * FROM tags WHERE name = ?", (name,))
+        existing = cur.fetchone()
+        if existing:
+            raise ValueError(f"Tag '{name}' already exists")
+
+        # 创建新标签
+        cur = conn.execute(
+            "INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)",
+            (name, color, now)
+        )
+        tag_id = cur.lastrowid
+
+        # 返回创建的标签
+        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
+        return dict(cur.fetchone())
+
+
+def update_tag(tag_id: int, name: Optional[str] = None, color: Optional[str] = None) -> Dict[str, Any]:
+    """Update an existing tag."""
+    conn = get_conn()
+
+    with conn:
+        # 检查标签是否存在
+        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
+        existing = cur.fetchone()
+        if not existing:
+            raise KeyError(f"Tag with id {tag_id} not found")
+
+        # 更新字段
+        updates = []
+        args = []
+
+        if name is not None:
+            name = name.strip().lower()
+            if not name:
+                raise ValueError("Tag name cannot be empty")
+            updates.append("name = ?")
+            args.append(name)
+
+        if color is not None:
+            updates.append("color = ?")
+            args.append(color)
+
+        if updates:
+            sql = f"UPDATE tags SET {', '.join(updates)} WHERE id = ?"
+            args.append(tag_id)
+            conn.execute(sql, args)
+
+        # 返回更新后的标签
+        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
+        return dict(cur.fetchone())
+
+
+def delete_tag(tag_id: int) -> None:
+    """Delete a tag and all its associations."""
+    conn = get_conn()
+
+    with conn:
+        # 检查标签是否存在
+        cur = conn.execute("SELECT name FROM tags WHERE id = ?", (tag_id,))
+        row = cur.fetchone()
+        if not row:
+            raise KeyError(f"Tag with id {tag_id} not found")
+
+        # 检查是否为系统标签
+        tag_name = row["name"]
+        if tag_name in SYSTEM_TAGS:
+            raise ValueError(f"Cannot delete system tag '{tag_name}'")
+
+        # 删除关联和标签本身
+        conn.execute("DELETE FROM model_tags WHERE tag_id = ?", (tag_id,))
+        conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))

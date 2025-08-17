@@ -22,8 +22,8 @@
 .card.selected{border-color:#1f6feb;box-shadow:0 0 0 2px rgba(31,111,235,.35) inset}
 .card .card-top{position:absolute;top:6px;left:6px;right:6px;display:flex;justify-content:space-between;align-items:center}
 .card .select-box{transform:scale(1.1)}
-.card .badge{padding:2px 6px;border-radius:999px;background:#6e7681;color:#0d1117;font-weight:600}
-.card .name{position:absolute;left:8px;right:8px;bottom:36px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);font-weight:600}
+.card .badge{padding:2px 6px;border-radius:999px;background:#6e7681;color:#0d1117;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.card .name{position:absolute;left:8px;right:8px;bottom:36px;color:#f0f6fc;text-shadow:0 2px 4px rgba(0,0,0,.6);font-weight:500}
 .card .tags{position:absolute;left:8px;right:8px;bottom:8px;display:flex;flex-wrap:wrap;gap:4px}
 .tag{padding:2px 6px;border-radius:999px;background:#21262d;color:#c9d1d9}
 .tag.highlight{background:#1f6feb;color:#fff}
@@ -31,7 +31,7 @@
 .row{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #30363d;border-radius:8px;background:#0d1117;transition:border-color .15s ease, box-shadow .15s ease}
 .row:hover{border-color:#388bfd}
 .row.selected{border-color:#1f6feb;box-shadow:0 0 0 2px rgba(31,111,235,.25) inset}
-.row-name{flex:1}
+.row-name{flex:1;color:#e6edf3;font-weight:600}
 .row-tags .tag{margin-right:4px}
 .bulk-actions{margin-top:12px;display:flex;gap:8px}
 .model-detail{flex:1;min-width:320px;max-width:420px;border-left:1px solid #2d333b;background:#0d1117;padding:12px;overflow:auto}
@@ -40,7 +40,8 @@
 .field{display:flex;align-items:center;gap:8px}
 .field .label{min-width:88px;color:#8b949e}
 .field input{flex:1;padding:6px 8px;border:1px solid #30363d;border-radius:6px;background:#0f141a;color:#c9d1d9}
-.field textarea{flex:1;padding:6px 8px;border:1px solid #30363d;border-radius:6px;background:#0f141a;color:#c9d1d9;resize:vertical;min-height:80px}
+.field input[disabled]{opacity:.7;cursor:not-allowed;background:#0c1117}
+.field textarea{flex:1;padding:6px 8px;border:1px solid #30363d;border-radius:6px;background:#0f141a;color:#c9d1d9;resize:vertical;min-height:140px}
 .actions{display:flex;gap:8px;margin-top:12px}
 .actions button{padding:6px 10px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;transition:background .15s ease,transform .05s ease,border-color .15s ease}
 .actions button:hover{background:#2a2f36;border-color:#3a3f46}
@@ -53,9 +54,10 @@
 .field input:focus{outline:2px solid #1f6feb;outline-offset:2px}
 
 /* 标签 chips 编辑器 */
-.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:#0f141a;border:1px solid #30363d;border-radius:6px;padding:6px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:#0f141a;border:1px solid #30363d;border-radius:6px;padding:6px;position:relative}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#21262d;color:#c9d1d9}
-.chip-x{border:none;background:transparent;color:#c9d1d9;cursor:pointer;font-size:14px;line-height:1}
+.chip-x{border:none;background:transparent;color:#c9d1d9;cursor:pointer;font-size:14px;line-height:1;opacity:0;transition:opacity .12s ease}
+.chip:hover .chip-x{opacity:1}
 .chips-input{flex:1;min-width:120px;border:none;outline:none;background:transparent;color:#c9d1d9;padding:4px}
 .chips-suggest{position:relative;width:100%}
 .chips-suggest:not(.hidden){position:absolute;left:0;right:0;top:100%;margin-top:4px;border:1px solid #30363d;background:#0d1117;border-radius:6px;max-height:180px;overflow:auto;z-index:20}
@@ -71,3 +73,13 @@
 .param-add{align-self:flex-start;padding:4px 8px;border:1px dashed #3a3f46;border-radius:6px;background:#1a1f26;color:#c9d1d9;cursor:pointer}
 .param-remove{border:none;background:#3a3f46;color:#c9d1d9;border-radius:6px;padding:0 8px;cursor:pointer}
 .param-remove:hover{background:#4a4f56}
+
+/* 通用按钮样式（与现有按钮风格一致） */
+.btn{padding:6px 10px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;transition:background .15s ease,transform .05s ease,border-color .15s ease}
+.btn:hover{background:#2a2f36;border-color:#3a3f46}
+.btn:disabled{opacity:.6;cursor:not-allowed}
+
+
+/* 非agent编辑 */
+.detailName{color:#e6edf3 !important;}
+.tagsMode{color:#e6edf3 !important;}

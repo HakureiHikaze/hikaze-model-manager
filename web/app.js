@@ -1,6 +1,14 @@
 'use strict';
 
 (function(){
+  // 仅在 iframe 内运行，避免被 ComfyUI 主页面自动加载
+  try {
+    if (typeof window !== 'undefined' && window.top === window) {
+      console.debug('[HikazeMM] app.js: detected top window, skip initialization');
+      return;
+    }
+  } catch(_) {}
+
   const state = {
     types: [],
     currentType: null,
@@ -29,12 +37,25 @@
     detailFields: document.getElementById('detailFields'),
     revertBtn: document.getElementById('revertBtn'),
     saveBtn: document.getElementById('saveBtn'),
-    confirmBtn: document.getElementById('confirmBtn'),
+    // confirmBtn 移除
     refreshBtn: document.getElementById('refreshBtn'),
   };
 
+  // 新增：安全绑定与日志
+  function bind(target, event, handler, name){
+    if (!target){
+      console.warn('[HikazeMM] Missing element for binding', name || event);
+      return;
+    }
+    try { target.addEventListener(event, handler); }
+    catch (e) { console.error('[HikazeMM] bind error', name || event, e); }
+  }
+  function exists(node, name){
+    if (!node){ console.warn('[HikazeMM] Missing element:', name); }
+    return !!node;
+  }
+
   // Helpers
-  const qs = (sel, root=document)=>root.querySelector(sel);
   const qsa = (sel, root=document)=>Array.from(root.querySelectorAll(sel));
   const h = (tag, props={}, ...children)=>{
     const e = document.createElement(tag);
@@ -53,6 +74,25 @@
     return e;
   };
 
+  function formatMs(ms){
+    if (!ms && ms !== 0) return '—';
+    const n = Number(ms);
+    if (!isFinite(n) || n <= 0) return '—';
+    try { return new Date(n).toLocaleString(); } catch(_){ return String(ms); }
+  }
+  function formatSize(bytes){
+    const n = Number(bytes);
+    if (!isFinite(n) || n < 0) return '—';
+    const units = ['B','KB','MB','GB','TB'];
+    let v = n, u = 0; while (v >= 1024 && u < units.length-1){ v/=1024; u++; }
+    return (u===0? v: v.toFixed(1)) + ' ' + units[u];
+  }
+  function sanitizeTagName(s){
+    if (typeof s !== 'string') return '';
+    return s.trim().toLowerCase().replace(/\s+/g,' ');
+  }
+  const NOASK_HASH_KEY = 'hikaze_mm_hash_noask';
+
   async function api(path){
     const r = await fetch(path);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -65,25 +105,83 @@
     return r.json();
   }
 
+  // SHA 行与相关辅助
+  function getNoAskHash(){
+    try { return localStorage.getItem(NOASK_HASH_KEY) === '1'; } catch(_) { return false; }
+  }
+  function setNoAskHash(on){
+    try { if (on) localStorage.setItem(NOASK_HASH_KEY, '1'); else localStorage.removeItem(NOASK_HASH_KEY);} catch(_) {}
+  }
+  async function fetchModelById(id){
+    return api(`/models/${id}`);
+  }
+  function createShaRow(m){
+    const current = m.hash_hex || '';
+    const row = h('label', {class:'field'});
+    const lab = h('span', {class:'label'}, 'SHA256');
+    const input = h('input', {value: current || '—', disabled: ''});
+    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, current ? '重算' : '计算');
+
+    btn.addEventListener('click', async ()=>{
+      try{
+        if (!getNoAskHash()){
+          if (!confirm('将计算该文件的 SHA256，可能较慢，是否继续？')) return;
+          if (confirm('是否不再询问？')) setNoAskHash(true);
+        }
+        btn.disabled = true; btn.textContent = '计算中…';
+        await apiJSON('POST', '/models/refresh', {id: m.id, compute_hash: true});
+        const fresh = await fetchModelById(m.id);
+        m.hash_hex = fresh.hash_hex;
+        input.value = m.hash_hex || '—';
+        btn.textContent = m.hash_hex ? '重算' : '计算';
+      }catch(err){
+        alert('计算失败: ' + (err && err.message ? err.message : err));
+      }finally{
+        btn.disabled = false;
+      }
+    });
+
+    row.append(lab, input, btn);
+    return row;
+  }
+
+  function createCommunityLinkRow(m){
+    const wrap = h('label', {class:'field'});
+    const lab = h('span', {class:'label'}, '社区链接');
+    const val = (m.extra && typeof m.extra.community_links === 'string') ? m.extra.community_links : '';
+    const input = h('input', {value: val, placeholder:'输入链接（Civitai/HF 等）', oninput:(e)=>{ m.extra=m.extra||{}; m.extra.community_links = e.target.value; }});
+    const openBtn = h('button', {class:'btn', style:{flex:'0 0 auto'}}, '打开');
+    openBtn.addEventListener('click', ()=>{
+      const url = (m.extra && m.extra.community_links) ? String(m.extra.community_links).trim() : '';
+      if (!url) return;
+      const hasProto = /^(https?:)?\/\//i.test(url);
+      const target = hasProto ? url : ('https://' + url);
+      window.open(target, '_blank');
+    });
+    wrap.append(lab, input, openBtn);
+    return wrap;
+  }
+
   // Types
   async function loadTypes(){
     const rows = await api('/types');
     state.types = rows;
-    // pick default
-    const preferred = ['checkpoint','lora','embedding','vae'];
-    let t = rows.find(x=>preferred.includes(x.name));
+    const preferred = ['checkpoints','loras','embeddings','vae','checkpoint','lora','embedding'];
+    let t = rows.find(x=>preferred.includes(String(x.name||'').toLowerCase()));
     if (!t && rows.length) t = rows[0];
     state.currentType = t ? t.name : null;
     renderTypeTabs();
   }
 
   function renderTypeTabs(){
+    if (!exists(el.typeTabs, 'typeTabs')) return;
     el.typeTabs.innerHTML = '';
     state.types.forEach(t=>{
-      el.typeTabs.appendChild(h('button', {
+      const btn = h('button', {
         class: 'tab' + (state.currentType===t.name?' active':''),
         onclick: ()=>{ state.currentType = t.name; state.selectedTags.clear(); renderTypeTabs(); updateAll(); }
-      }, `${t.name} (${t.count})`));
+      }, `${t.name} (${t.count})`);
+      el.typeTabs.appendChild(btn);
     });
   }
 
@@ -97,22 +195,27 @@
     if (selected) url.searchParams.set('selected', selected);
     url.searchParams.set('mode', state.tagsMode);
     const facets = await api(url.pathname + '?' + url.searchParams.toString());
-    // 标签建议改为该大类全部标签
     try {
       const byTypeUrl = new URL(location.origin + '/tags/by-type');
       byTypeUrl.searchParams.set('type', state.currentType);
       const allTags = await api(byTypeUrl.pathname + '?' + byTypeUrl.searchParams.toString());
-      state.tagCandidates = (Array.isArray(allTags)? allTags: []).filter(n=>typeof n==='string');
+      if (Array.isArray(allTags)) {
+        state.tagCandidates = allTags
+          .map(t => (typeof t === 'string' ? t : (t && t.name)))
+          .filter(v => typeof v === 'string' && v.trim().length > 0);
+      } else {
+        state.tagCandidates = [];
+      }
     } catch(e) {
-      // 回退到 facets 名称集合
-      state.tagCandidates = facets.map(f=>f.name);
+      state.tagCandidates = Array.isArray(facets) ? facets.map(f=>f && f.name).filter(Boolean) : [];
     }
     renderTagDropdown(facets);
   }
 
   function renderTagDropdown(facets){
+    if (!exists(el.tagDropdown, 'tagDropdown')) return;
     el.tagDropdown.innerHTML = '';
-    const items = facets.filter(f=>!['checkpoint','lora','embedding','vae','upscale','ultralytics','other'].includes(f.name));
+    const items = facets.filter(f=> String(f.name) !== String(state.currentType||''));
     if (!items.length) {
       el.tagDropdown.appendChild(h('div', {class:'empty'}, '暂无可筛选标签'));
       return;
@@ -140,10 +243,68 @@
     const data = await api(url.pathname + '?' + url.searchParams.toString());
     state.models = data.items || [];
     state.total = data.total || 0;
+    if (state.selectedModel) {
+      const found = state.models.find(it=> it && it.id === state.selectedModel.id);
+      if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
+    }
     renderModels();
   }
 
+  // 悬浮预览
+  const hoverPreview = { el: null, timer: null, pos: {x: 0, y: 0} };
+  function createHoverEl(){
+    if (hoverPreview.el) return hoverPreview.el;
+    const box = document.createElement('div');
+    box.id = 'hikaze-hover-preview';
+    Object.assign(box.style, {
+      position: 'fixed', zIndex: '9999', pointerEvents: 'none',
+      background: '#000', border: '1px solid #444', borderRadius: '6px',
+      boxShadow: '0 6px 16px rgba(0,0,0,0.35)', padding: '4px',
+      maxWidth: '280px', maxHeight: '280px', display: 'none'
+    });
+    const img = document.createElement('img');
+    Object.assign(img.style, { maxWidth: '272px', maxHeight: '272px', display: 'block', objectFit: 'contain' });
+    box.appendChild(img);
+    document.body.appendChild(box);
+    hoverPreview.el = box;
+    return box;
+  }
+  function positionPreview(){
+    const elp = hoverPreview.el; if (!elp) return;
+    const pad = 12, offset = 16;
+    let x = hoverPreview.pos.x + offset;
+    let y = hoverPreview.pos.y + offset;
+    const rect = elp.getBoundingClientRect();
+    const ww = window.innerWidth, wh = window.innerHeight;
+    if (x + rect.width + pad > ww) x = Math.max(pad, ww - rect.width - pad);
+    if (y + rect.height + pad > wh) y = Math.max(pad, wh - rect.height - pad);
+    elp.style.left = x + 'px';
+    elp.style.top = y + 'px';
+  }
+  function trackMouse(e){
+    hoverPreview.pos.x = e.clientX; hoverPreview.pos.y = e.clientY;
+    if (hoverPreview.el && hoverPreview.el.style.display === 'block') positionPreview();
+  }
+  function removePreview(){
+    if (hoverPreview.timer) { clearTimeout(hoverPreview.timer); hoverPreview.timer = null; }
+    if (hoverPreview.el) hoverPreview.el.style.display = 'none';
+  }
+  function schedulePreview(m){
+    if (hoverPreview.timer) { clearTimeout(hoverPreview.timer); hoverPreview.timer = null; }
+    removePreview();
+    const url = (m && m.images && m.images[0]) ? m.images[0] : null;
+    if (!url) return;
+    hoverPreview.timer = setTimeout(() => {
+      const box = createHoverEl();
+      const img = box.querySelector('img');
+      img.onload = () => { box.style.display = 'block'; positionPreview(); };
+      img.onerror = () => { box.style.display = 'none'; };
+      img.src = url;
+    }, 350);
+  }
+
   function renderModels(){
+    if (!exists(el.modelsContainer, 'modelsContainer')) return;
     el.modelsContainer.className = state.viewMode === 'cards' ? 'cards' : 'list';
     el.modelsContainer.innerHTML = '';
     if (!state.models.length){
@@ -175,16 +336,123 @@
           h('span', {class:'row-name'}, m.name || m.path),
           h('span', {class:'row-tags'}, tags.map(t=>h('span', {class:'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)))
         );
-        row.addEventListener('mouseenter', ()=>{/* optional: hover preview */});
+        row.addEventListener('mouseenter', (e)=>{ trackMouse(e); schedulePreview(m); });
+        row.addEventListener('mousemove', (e)=>{ trackMouse(e); });
+        row.addEventListener('mouseleave', ()=>{ removePreview(); });
         el.modelsContainer.appendChild(row);
       }
     });
   }
 
   function selectModel(m){
-    state.selectedModel = JSON.parse(JSON.stringify(m)); // 拷贝以便编辑
+    state.selectedModel = JSON.parse(JSON.stringify(m));
     state.originalDetail = JSON.parse(JSON.stringify(m));
     renderDetail();
+    renderModels();
+  }
+
+  // 标签 chips 编辑器（类型标签置灰不可删；其他标签仅在点击 × 时删除）
+  function createTagChipsEditor(m){
+    const box = h('div', {class:'chips'});
+    const typeName = m.type || '';
+    // 初始化为“用户标签”（不含类型标签），以经典chips方式编辑
+    if (!Array.isArray(m.__tags)){
+      m.__tags = (Array.isArray(m.tags)? m.tags: []).filter(t=>t && t!==typeName);
+    }
+    const tagsSet = new Set(m.__tags.map(sanitizeTagName).filter(Boolean));
+
+    const input = h('input', {class:'chips-input', placeholder:'输入标签，空格/逗号/回车添加'});
+    const suggestWrap = h('div', {class:'chips-suggest hidden'});
+
+    function renderChips(){
+      box.querySelectorAll('.chip').forEach(n=>n.remove());
+      // 不再渲染类型标签chip，仅渲染可编辑的用户标签
+      Array.from(tagsSet).forEach(tag=>{
+        const chip = h('span', {class:'chip', onclick:(e)=>{ e.stopPropagation(); }}, [
+          tag,
+          h('button', {class:'chip-x', title:'移除', onclick:(e)=>{ e.preventDefault(); e.stopPropagation(); tagsSet.delete(tag); syncBack(); renderChips(); }}, '×')
+        ]);
+        box.insertBefore(chip, input);
+      });
+      syncBack();
+    }
+    function syncBack(){
+      m.__tags = Array.from(tagsSet);
+    }
+    function commitFromInput(){
+      const raw = input.value.trim();
+      if (!raw) return;
+      const parts = raw.split(/[\s,]+/).map(sanitizeTagName).filter(Boolean);
+      let changed = false;
+      for (const p of parts){ if (p && !tagsSet.has(p)){ tagsSet.add(p); changed = true; } }
+      input.value='';
+      if (changed) renderChips();
+    }
+    function refreshSuggest(){
+      const q = input.value.trim().toLowerCase();
+      const cands = Array.isArray(state.tagCandidates)? state.tagCandidates: [];
+      const filtered = cands
+        .map(sanitizeTagName)
+        .filter(Boolean)
+        .filter(t=> !tagsSet.has(t) && (!q || t.includes(q)))
+        .slice(0, 20);
+      suggestWrap.innerHTML = '';
+      if (!filtered.length){ suggestWrap.classList.add('hidden'); return; }
+      filtered.forEach(t=>{
+        const item = h('div', {class:'chips-suggest-item', onclick:(e)=>{ e.stopPropagation(); tagsSet.add(t); syncBack(); renderChips(); input.focus(); suggestWrap.classList.add('hidden'); }}, t);
+        suggestWrap.appendChild(item);
+      });
+      suggestWrap.classList.remove('hidden');
+    }
+
+    // 仅在 Enter/空格/逗号提交；不支持 Backspace 批量清空
+    input.addEventListener('keydown', (e)=>{
+      if (e.key==='Enter' || e.key===' ' || e.key===','){ e.preventDefault(); commitFromInput(); suggestWrap.classList.add('hidden'); }
+    });
+    input.addEventListener('input', ()=> refreshSuggest());
+    input.addEventListener('blur', ()=> setTimeout(()=>{ suggestWrap.classList.add('hidden'); }, 150));
+
+    // 点击容器仅聚焦输入，不修改标签
+    box.addEventListener('click', ()=>{ input.focus(); });
+
+    box.append(input, suggestWrap);
+    renderChips();
+    return box;
+  }
+
+  function createImageUploadRow(m){
+    const url = (m.extra && Array.isArray(m.extra.images) && m.extra.images[0]) ? m.extra.images[0] : '';
+    const filename = url ? (url.split('/').pop() || '') : '';
+    const wrap = h('label', {class:'field'});
+    const lab = h('span', {class:'label'}, '示例图片');
+    const nameBox = h('input', {value: filename || '—', disabled: ''});
+    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, '上传');
+    const fileInput = h('input', {type:'file', accept:'image/*', style:'display:none'});
+
+    btn.addEventListener('click', ()=> fileInput.click());
+    fileInput.addEventListener('change', async ()=>{
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      btn.disabled = true; const old = btn.textContent; btn.textContent = '上传中…';
+      try{
+        const r = await fetch(`/models/${m.id}/image`, {method:'PUT', headers:{'Content-Type': f.type || 'application/octet-stream', 'X-Filename': f.name}, body: f});
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const js = await r.json();
+        const imageUrl = js.image_url;
+        m.extra = m.extra || {}; m.extra.images = [imageUrl];
+        nameBox.value = js.file || (imageUrl.split('/').pop()||'');
+        if (imageUrl) { el.detailImage.style.backgroundImage = `url(${imageUrl})`; }
+        const found = state.models.find(it=>it.id===m.id); if (found) { found.images = [imageUrl]; }
+        renderModels();
+      }catch(err){
+        alert('上传失败: ' + (err && err.message ? err.message : err));
+      }finally{
+        btn.disabled = false; btn.textContent = old; fileInput.value = '';
+      }
+    });
+
+    wrap.append(lab, nameBox, btn, fileInput);
+    return wrap;
   }
 
   function renderDetail(){
@@ -200,82 +468,43 @@
     const img = (m.images && m.images[0]) ? m.images[0] : null;
     el.detailImage.style.backgroundImage = img ? `url(${img})` : '';
 
-    const ro = (label, value)=> h('label', {class:'field'}, [h('span', {class:'label'}, label), h('input', {value: value||'', disabled: ''})]);
-    const rw = (label, key)=> h('label', {class:'field'}, [h('span', {class:'label'}, label), h('input', {value: (m.extra&&m.extra[key])||'', oninput:(e)=>{ m.extra = m.extra||{}; m.extra[key]=e.target.value; }})]);
+    const ro = (label, value)=> h('label', {class:'field'}, [h('span', {class:'label'}, label), h('input', {value: (value===undefined||value===null||value==='')?'—':String(value), disabled: ''})]);
     const rwArea = (label, key, placeholder)=> h('label', {class:'field'}, [h('span', {class:'label'}, label), h('textarea', {placeholder: placeholder||'', oninput:(e)=>{ m.extra = m.extra||{}; m.extra[key]=e.target.value; }}, (m.extra&&m.extra[key])||'')]);
 
-    // 标签编辑器（chips）
     const tagsEditor = createTagChipsEditor(m);
-    const imagesEditor = createStringChipsEditor(m, 'images', '添加图片 URL 或相对路径');
     const promptsEditor = createPromptsEditor(m);
-    const paramsEditor = createParamsEditor(m);
 
     el.detailFields.innerHTML='';
     el.detailFields.append(
       ro('类型', m.type),
+      ro('文件名', m.name || (m.path? m.path.split(/[\/\\]/).pop(): '—')),
       ro('路径', m.path),
-      ro('Hash', m.hash_hex),
-      ro('添加时间', m.created_at),
-      rw('Civitai 链接', 'civitai_url'),
-      rw('HuggingFace 仓库', 'hf_repo'),
+      ro('大小', formatSize(m.size_bytes)),
+      ro('添加时间', formatMs(m.created_at)),
+      createShaRow(m),
+      createCommunityLinkRow(m),
       rwArea('描述', 'description', '模型描述'),
-      rwArea('使用说明', 'usage', '如何使用、推荐设置等'),
-      h('label', {class:'field'}, [h('span', {class:'label'}, '标签'), tagsEditor]),
-      h('label', {class:'field'}, [h('span', {class:'label'}, '示例图片'), imagesEditor]),
-      h('label', {class:'field'}, [h('span', {class:'label'}, 'Prompts'), promptsEditor]),
-      h('div', {class:'params'}, [
-        h('div', {class:'field'}, [h('span', {class:'label'}, '参数')]),
-        paramsEditor,
-        h('button', {class:'param-add', onclick:()=>{ const p = (m.extra=m.extra||{}, m.extra.params=m.extra.params||{}); const k = suggestParamKey(p); if (!(k in p)) p[k]=''; renderDetail(); }}, '+ 新增参数')
-      ])
+      createImageUploadRow(m)
+    );
+    // 标签标题行（仅标题在 label 内）
+    el.detailFields.append(
+      h('label', {class:'field'}, [h('span', {class:'label'}, '标签')])
+    );
+    // 标签编辑器框置于 label 外，���独占一行
+    el.detailFields.append(tagsEditor);
+    // Prompts 标题与编辑器（保持原有结构）
+    el.detailFields.append(
+      h('label', {class:'field'}, [h('span', {class:'label'}, 'Prompts')]),
+      promptsEditor
     );
     updateActionsState();
   }
 
   function updateActionsState(){
+    if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
     const has = !!state.selectedModel;
     el.saveBtn.disabled = !has;
     el.revertBtn.disabled = !has;
-  }
-
-  function createStringChipsEditor(m, key, placeholder){
-    const container = h('div', {class:'chips'});
-    const list = Array.isArray(m.extra && m.extra[key]) ? [...m.extra[key]] : [];
-    const setList = (arr)=>{ m.extra = m.extra||{}; m.extra[key] = arr; };
-
-    const input = h('input', {class:'chips-input', placeholder: placeholder||'输入后空格/逗号/回车确认'});
-
-    function render(){
-      container.querySelectorAll('.chip').forEach(n=>n.remove());
-      list.forEach((t, idx)=>{
-        const chip = h('span', {class:'chip'}, [
-          t,
-          h('button', {class:'chip-x', title:'移除', onclick:()=>{ list.splice(idx,1); setList([...list]); render(); }}, '×')
-        ]);
-        container.insertBefore(chip, input);
-      });
-      setList([...list]);
-    }
-
-    function commit(){
-      const raw = input.value.trim();
-      const parts = raw.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
-      let changed = false;
-      parts.forEach(p=>{ if (!list.includes(p)) { list.push(p); changed=true; } });
-      if (changed) render();
-      input.value = '';
-    }
-
-    input.addEventListener('keydown', (e)=>{
-      if (e.key==='Enter' || e.key===' ' || e.key===','){ e.preventDefault(); commit(); }
-      else if (e.key==='Backspace' && input.value===''){
-        list.pop(); render();
-      }
-    });
-
-    container.append(input);
-    render();
-    return container;
   }
 
   function createPromptsEditor(m){
@@ -289,34 +518,14 @@
     return box;
   }
 
-  function createParamsEditor(m){
-    const wrap = h('div');
-    const p = (m.extra && m.extra.params && typeof m.extra.params==='object') ? {...m.extra.params} : {};
-    function saveBack(){ m.extra=m.extra||{}; m.extra.params = {...p}; }
+  // 移除参数编辑器与 suggestParamKey
 
-    function row(key, val){
-      const kInput = h('input', {class:'param-k', value:key, placeholder:'键', oninput:(e)=>{ const nv = e.target.value.trim(); if (nv && nv!==key){ delete p[key]; p[nv] = val; key = nv; } }});
-      const vInput = h('input', {class:'param-v', value:val, placeholder:'值', oninput:(e)=>{ p[key] = e.target.value; }});
-      const del = h('button', {class:'param-remove', title:'删除', onclick:()=>{ delete p[key]; render(); }}, '删除');
-      const line = h('div', {class:'param-row'}, [kInput, vInput, del]);
-      return line;
-    }
-
-    function render(){
-      wrap.innerHTML = '';
-      Object.entries(p).forEach(([k,v])=>{ wrap.appendChild(row(k, v)); });
-      saveBack();
-    }
-
-    render();
-    return wrap;
+  function revertDetail(){
+    if (!state.originalDetail) return;
+    state.selectedModel = JSON.parse(JSON.stringify(state.originalDetail));
+    renderDetail();
   }
 
-  function suggestParamKey(p){
-    const base = 'param'; let i=1; while ((base+i) in p) i++; return base+i;
-  }
-
-  // ...existing code...
   async function saveDetail(){
     const m = state.selectedModel; if (!m) return;
     // Save tags
@@ -329,63 +538,20 @@
       const resp = await apiJSON('POST', `/models/${m.id}/tags`, {add, remove});
       m.tags = resp.tags;
     }
-    // Save extra：合并主要可编辑字段
+    // Save extra：不再提交 params
     m.extra = m.extra || {};
     const extraPayload = {};
-    ['description','usage','civitai_url','hf_repo','images','prompts','params'].forEach(k=>{
+    ['description','community_links','images','prompts'].forEach(k=>{
       if (m.extra[k] !== undefined) extraPayload[k] = m.extra[k];
     });
     if (Object.keys(extraPayload).length){
       const resp2 = await apiJSON('PATCH', `/models/${m.id}/extra`, extraPayload);
       m.extra = Object.assign({}, m.extra||{}, resp2);
     }
-    // 更新原始快照
     state.originalDetail = JSON.parse(JSON.stringify(m));
-    // 刷新列表以反映变化
     await loadModels();
     renderDetail();
-
-    // 轻量反馈
     const txt = el.saveBtn.textContent; el.saveBtn.textContent = '已保存'; setTimeout(()=>{ el.saveBtn.textContent = txt; }, 1000);
-  }
-
-  // 选中态高亮
-  function renderModels(){
-    el.modelsContainer.className = state.viewMode === 'cards' ? 'cards' : 'list';
-    el.modelsContainer.innerHTML = '';
-    if (!state.models.length){
-      el.modelsContainer.appendChild(h('div', {class:'empty'}, '无结果'));
-      return;
-    }
-    state.models.forEach(m=>{
-      const tags = (m.tags||[]).filter(t=>t!==m.type);
-      const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
-      if (state.viewMode === 'cards'){
-        const card = h('div', {class:'card' + (isSel?' selected':''), onclick:()=>selectModel(m)});
-        const checkbox = h('input', {type:'checkbox', class:'select-box', onclick:(e)=>e.stopPropagation()});
-        const badge = h('span', {class:'badge'}, m.type);
-        const top = h('div', {class:'card-top'}, [checkbox, badge]);
-        const bg = h('div', {class:'bg'});
-        const name = h('div', {class:'name'}, m.name || m.path);
-        const tagRow = h('div', {class:'tags'}, tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)));
-        card.append(top, bg, name, tagRow);
-        if (m.images && m.images.length){
-          card.style.backgroundImage = `url(${m.images[0]})`;
-        } else {
-          card.classList.add('no-image');
-        }
-        el.modelsContainer.appendChild(card);
-      } else {
-        const row = h('div', {class:'row' + (isSel?' selected':''), onclick:()=>selectModel(m)});
-        row.append(
-          h('input', {type:'checkbox', class:'select-box', onclick:(e)=>e.stopPropagation()}),
-          h('span', {class:'row-name'}, m.name || m.path),
-          h('span', {class:'row-tags'}, tags.map(t=>h('span', {class:'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)))
-        );
-        row.addEventListener('mouseenter', ()=>{/* optional: hover preview */});
-        el.modelsContainer.appendChild(row);
-      }
-    });
   }
 
   function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
@@ -395,28 +561,47 @@
   }
 
   async function boot(){
+    console.debug('[HikazeMM] boot start');
     wire();
     await loadTypes();
     await updateAll();
+    console.debug('[HikazeMM] boot done');
   }
 
   function wire(){
-    el.cardViewBtn.addEventListener('click', ()=>{ state.viewMode='cards'; el.cardViewBtn.classList.add('active'); el.listViewBtn.classList.remove('active'); renderModels(); });
-    el.listViewBtn.addEventListener('click', ()=>{ state.viewMode='list'; el.listViewBtn.classList.add('active'); el.cardViewBtn.classList.remove('active'); renderModels(); });
+    // 视图切换
+    bind(el.cardViewBtn, 'click', ()=>{ state.viewMode='cards'; el.cardViewBtn && el.cardViewBtn.classList.add('active'); el.listViewBtn && el.listViewBtn.classList.remove('active'); renderModels(); }, 'cardViewBtn');
+    bind(el.listViewBtn, 'click', ()=>{ state.viewMode='list'; el.listViewBtn && el.listViewBtn.classList.add('active'); el.cardViewBtn && el.cardViewBtn.classList.remove('active'); renderModels(); }, 'listViewBtn');
 
-    qsa('input[name="tagsMode"]').forEach(r=> r.addEventListener('change', (e)=>{ state.tagsMode = e.target.value; updateAll(); }));
+    // 标签模式
+    qsa('input[name="tagsMode"]').forEach(r=> bind(r, 'change', (e)=>{ state.tagsMode = e.target.value; updateAll(); }, 'tagsMode'));
 
-    el.tagDropdownBtn.addEventListener('click', ()=>{ el.tagDropdown.classList.toggle('hidden'); });
-    document.addEventListener('click', (e)=>{ if (!el.tagDropdown.contains(e.target) && e.target!==el.tagDropdownBtn) el.tagDropdown.classList.add('hidden'); });
+    // 标签下拉
+    bind(el.tagDropdownBtn, 'click', ()=>{ if (el.tagDropdown) el.tagDropdown.classList.toggle('hidden'); }, 'tagDropdownBtn');
+    document.addEventListener('click', (e)=>{
+      try{
+        if (el.tagDropdown && !el.tagDropdown.contains(e.target) && e.target!==el.tagDropdownBtn) el.tagDropdown.classList.add('hidden');
+      }catch(err){ console.debug('[HikazeMM] click handler skipped', err); }
+    });
 
-    el.searchInput.addEventListener('input', debounce(()=>{ state.q = el.searchInput.value.trim(); updateAll(); }, 300));
-    el.refreshBtn.addEventListener('click', ()=> updateAll());
+    // 搜索与扫描
+    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); updateAll(); }, 300), 'searchInput');
+    bind(el.refreshBtn, 'click', async ()=>{
+      try{
+        if (!el.refreshBtn) return;
+        el.refreshBtn.disabled = true; const old = el.refreshBtn.textContent; el.refreshBtn.textContent = '启动中…';
+        await apiJSON('POST', '/scan/start', {full: false});
+        el.refreshBtn.textContent = '已启动';
+        setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; updateAll(); }, 1000);
+      }catch(err){
+        if (el.refreshBtn) el.refreshBtn.disabled = false; alert('启动扫描失败: ' + err.message);
+      }
+    }, 'refreshBtn');
 
-    el.saveBtn.addEventListener('click', ()=>{ saveDetail().catch(err=>alert('保存失败: '+err.message)); });
-    el.revertBtn.addEventListener('click', ()=> revertDetail());
-    el.confirmBtn.addEventListener('click', ()=>{ console.log('确认选择（占位）', state.selectedModel); });
+    // 保存/撤销
+    bind(el.saveBtn, 'click', ()=>{ saveDetail().catch(err=>alert('保存失败: '+err.message)); }, 'saveBtn');
+    bind(el.revertBtn, 'click', ()=> revertDetail(), 'revertBtn');
 
-    // 初始禁用态刷新
     updateActionsState();
   }
 

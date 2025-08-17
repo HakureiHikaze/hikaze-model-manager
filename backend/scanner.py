@@ -88,6 +88,28 @@ class Scanner:
         self._last_error: Optional[str] = None
         self._last_started_ms: Optional[int] = None
 
+    def _infer_type_by_roots(self, path: str) -> str:
+        apath = os.path.abspath(path)
+        roots = self._cfg.model_roots or []
+        rmap = getattr(self._cfg, 'root_type_map', {}) or {}
+        for r in roots:
+            try:
+                rabs = os.path.abspath(r)
+                common = os.path.commonpath([os.path.normcase(rabs), os.path.normcase(apath)])
+            except Exception:
+                continue
+            if common == os.path.normcase(rabs):
+                # 若该根即为类型目录，直接返回映射类型
+                mt = rmap.get(os.path.normcase(rabs))
+                if mt:
+                    return mt
+                # 否则按一级子目录名推断
+                rel = os.path.relpath(apath, rabs)
+                parts = [p for p in rel.replace('\\','/').split('/') if p and p not in ('.','..')]
+                if parts:
+                    return parts[0].strip().lower()
+        return 'other'
+
     # public status API
     def status(self) -> Dict[str, object]:
         with self._lock:
@@ -112,6 +134,7 @@ class Scanner:
             paths = self._cfg.model_roots or []
         # normalize
         paths = [os.path.abspath(p) for p in paths if p and os.path.isdir(p)]
+        # full=True 视为深度刷新：包含哈希重算
         self._thread = threading.Thread(target=self._run, args=(paths, full), daemon=True)
         self._thread.start()
         return True
@@ -120,12 +143,12 @@ class Scanner:
         self._stop.set()
         return True
 
-    def refresh_one(self, path: str) -> bool:
-        """Public API: 刷新单个文件（重算哈希并入库）。返回是否成功。"""
+    def refresh_one(self, path: str, compute_hash: bool = False) -> bool:
+        """Public API: 刷新单个文件（索引属性更新；可选重算哈希）。返回是否成功。"""
         try:
             if not os.path.isfile(path):
                 return False
-            self._process_file(path, full=True)
+            self._process_file(path, compute_hash=compute_hash)
             return True
         except Exception:
             return False
@@ -141,7 +164,8 @@ class Scanner:
                 if self._stop.is_set():
                     break
                 try:
-                    self._process_file(path, full)
+                    # full 模式计算哈希；默认不计算
+                    self._process_file(path, compute_hash=full)
                 except Exception:
                     with self._lock:
                         self._stats.errors += 1
@@ -158,8 +182,31 @@ class Scanner:
     def _iter_files(self, roots: Iterable[str]) -> Iterable[str]:
         exts = {e for s in SUPPORTED_EXTS.values() for e in s}
         exts.update({".safetensors", ".ckpt", ".pth", ".pt", ".bin"})
+        visited: set[str] = set()
         for root in roots:
-            for dirpath, _dirnames, filenames in os.walk(root):
+            root_abs = os.path.abspath(root)
+            for dirpath, dirnames, filenames in os.walk(root_abs, followlinks=True):
+                # 去重：按 realpath 防止链接循环
+                try:
+                    rp = os.path.realpath(dirpath)
+                except Exception:
+                    rp = dirpath
+                if os.path.normcase(rp) in visited:
+                    dirnames[:] = []
+                    continue
+                visited.add(os.path.normcase(rp))
+                # 过滤将要递归的子目录：仅去重（不限制是否跳出根，以支持 junction）
+                kept = []
+                for d in list(dirnames):
+                    p = os.path.join(dirpath, d)
+                    try:
+                        rpd = os.path.realpath(p)
+                    except Exception:
+                        rpd = p
+                    if os.path.normcase(rpd) in visited:
+                        continue
+                    kept.append(d)
+                dirnames[:] = kept
                 for fn in filenames:
                     ext = os.path.splitext(fn)[1].lower()
                     if ext in exts:
@@ -172,23 +219,28 @@ class Scanner:
                 h.update(chunk)
         return h.hexdigest()
 
-    def _process_file(self, path: str, full: bool):
+    def _process_file(self, path: str, compute_hash: bool):
         st = os.stat(path)
-        dir_path = os.path.dirname(path)
         name = os.path.basename(path)
-        mtime_ns = int(st.st_mtime_ns)
         size_bytes = int(st.st_size)
-        type_ = infer_type(path)
-        # We always compute sha256 for civitai compatibility; future: use cache table
-        hash_hex = self._sha256_file(path)
-        model_id = db.upsert_model(
+        # 新分类：优先基于根映射或 models 根的一级子目录
+        type_ = self._infer_type_by_roots(path)
+        # 懒计算：默认不计算哈希；尽量复用已有值
+        hash_hex = ""
+        if compute_hash:
+            hash_hex = self._sha256_file(path)
+        else:
+            try:
+                existing = db.get_model_by_path(path)
+            except Exception:
+                existing = None
+            if existing:
+                hash_hex = (existing.get("hash_hex") or "")
+        db.upsert_model(
             path=path,
-            dir_path=dir_path,
             name=name,
             type_=type_,
             size_bytes=size_bytes,
-            mtime_ns=mtime_ns,
-            hash_algo="sha256",
             hash_hex=hash_hex,
             created_at_ms=int(time.time() * 1000),
             meta_json=None,

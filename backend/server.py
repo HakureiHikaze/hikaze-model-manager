@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from typing import Any, List, Optional, Literal
 from urllib.parse import parse_qs, urlparse
@@ -42,6 +43,7 @@ VERSION = "0.2.0"
 
 # Derive WEB_DIR at runtime to avoid import cycle
 WEB_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)), "web")
+MEDIA_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)), "data", "images")
 
 _cfg: Optional[AppConfig] = None
 _scanner: Optional[Scanner] = None
@@ -66,7 +68,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type,Accept")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,Accept,X-Filename")
         self.end_headers()
 
     def _serve_web_file(self, rel: str) -> None:
@@ -111,6 +113,40 @@ class ApiHandler(SimpleHTTPRequestHandler):
             self._set_headers(500)
             self.wfile.write(_json_dumps({"error": {"code": "READ_ERROR", "message": "cannot read file"}}))
 
+    def _serve_media_file(self, rel: str) -> None:
+        rel = rel.replace("\\", "/").lstrip("/")
+        safe_rel = os.path.normpath(rel)
+        if safe_rel.startswith(".."):
+            self._set_headers(404)
+            self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "file not found"}}))
+            return
+        full_path = os.path.join(MEDIA_DIR, safe_rel)
+        if os.path.isdir(full_path):
+            self._set_headers(404)
+            self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "file not found"}}))
+            return
+        if not (os.path.exists(full_path) and os.path.commonpath([os.path.abspath(MEDIA_DIR), os.path.abspath(full_path)]) == os.path.abspath(MEDIA_DIR)):
+            self._set_headers(404)
+            self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "file not found"}}))
+            return
+        ext = os.path.splitext(full_path)[1].lower()
+        ct = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(ext, "application/octet-stream")
+        try:
+            with open(full_path, "rb") as f:
+                data = f.read()
+            self._set_headers(200, ct)
+            self.wfile.write(data)
+        except Exception:
+            self._set_headers(500)
+            self.wfile.write(_json_dumps({"error": {"code": "READ_ERROR", "message": "cannot read file"}}))
+
     def do_OPTIONS(self):  # noqa: N802
         self._set_headers(204)
 
@@ -131,7 +167,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/version":
-            payload = {"version": VERSION, "schema": 1}
+            payload = {"version": VERSION, "schema": 2}
             self._set_headers(200)
             self.wfile.write(_json_dumps(payload))
             return
@@ -152,8 +188,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             type_ = qs.get("type", [None])[0]
             if not type_:
-                self._set_headers(400)
-                self.wfile.write(_json_dumps({"error": {"code": "VALIDATION_ERROR", "message": "type required"}}))
+                # 宽容处理：无 type 时?空集合，避免前端初始化失��
+                self._set_headers(200)
+                self.wfile.write(_json_dumps([]))
                 return
             self._set_headers(200)
             self.wfile.write(_json_dumps(db.list_tags_by_type(type_)))
@@ -176,8 +213,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
             try:
                 facets = db.tag_facets(type_=type_, q=q, selected=selected or None, mode=mode_l)
             except Exception as e:
-                self._set_headers(400)
-                self.wfile.write(_json_dumps({"error": {"code": "BAD_REQUEST", "message": str(e)}}))
+                # 宽容处理：异常时返回空集合，避免前端初始化失败
+                self._set_headers(200)
+                self.wfile.write(_json_dumps([]))
                 return
             self._set_headers(200)
             self.wfile.write(_json_dumps(facets))
@@ -188,7 +226,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             q = qs.get("q", [None])[0]
             type_ = qs.get("type", [None])[0]
-            dir_path = qs.get("dir", [None])[0]
+            # v2: 不再支持按 dir 过滤
+            # dir_path = qs.get("dir", [None])[0]
             tags_param = qs.get("tags", [])
             tags_list: List[str] = []
             for t in tags_param:
@@ -204,7 +243,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             ordv: Literal['asc', 'desc'] = 'asc' if order_str == 'asc' else 'desc'
 
             items, total = db.query_models(
-                q=q, type_=type_, dir_path=dir_path, tags=tags_list or None, tags_mode=tm, limit=limit, offset=offset, sort=sort, order=ordv
+                q=q, type_=type_, dir_path=None, tags=tags_list or None, tags_mode=tm, limit=limit, offset=offset, sort=sort, order=ordv
             )
             # enrich with tags and parsed json
             out = []
@@ -221,15 +260,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 out.append({
                     "id": m["id"],
                     "path": m["path"],
-                    "dir_path": m["dir_path"],
                     "name": m.get("name"),
                     "type": m.get("type"),
                     "size_bytes": m.get("size_bytes"),
-                    "mtime_ns": m.get("mtime_ns"),
-                    "hash_algo": m.get("hash_algo"),
                     "hash_hex": m.get("hash_hex"),
                     "created_at": m.get("created_at"),
-                    "updated_at": m.get("updated_at"),
                     "tags": tags,
                     "meta": meta,
                     "extra": extra,
@@ -330,6 +365,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
             rel = path[len("/web/"):]
             self._serve_web_file(rel)
             return
+        if path.startswith("/media/"):
+            rel = path[len("/media/"):]
+            self._serve_media_file(rel)
+            return
 
         self._set_headers(404)
         self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "not found"}}))
@@ -376,6 +415,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if path == "/models/refresh":
             mid = data.get("id")
             mpath = data.get("path")
+            compute_hash = bool(data.get("compute_hash", False))
             if mid is not None and not mpath:
                 m = db.get_model_by_id(int(mid))
                 if not m:
@@ -387,7 +427,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 self._set_headers(400)
                 self.wfile.write(_json_dumps({"error": {"code": "VALIDATION_ERROR", "message": "id or path required"}}))
                 return
-            ok = _scanner.refresh_one(mpath)
+            ok = _scanner.refresh_one(mpath, compute_hash=compute_hash)
             self._set_headers(200)
             self.wfile.write(_json_dumps({"refreshed": bool(ok)}))
             return
@@ -461,136 +501,214 @@ class ApiHandler(SimpleHTTPRequestHandler):
         self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "not found"}}))
 
     def do_PUT(self):  # noqa: N802
+        """Handle image upload for a model: PUT /models/{id}/image"""
         parsed = urlparse(self.path)
         path = parsed.path or "/"
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length) if length > 0 else b""
-        data = _json_loads(body) or {}
-
-        m = re.match(r"^/models/(\d+)/extra$", path)
-        if m:
-            mid = int(m.group(1))
-            model = db.get_model_by_id(mid)
-            if not model:
-                self._set_headers(404)
-                self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "model not found"}}))
-                return
-            if not isinstance(data, dict):
-                data = {}
-            with db.get_conn():
-                db.get_conn().execute("UPDATE models SET extra_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), mid))
-            self._set_headers(200)
-            self.wfile.write(_json_dumps(data))
+        m = re.match(r"^/models/(\d+)/image$", path)
+        if not m:
+            self._set_headers(404)
+            self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "not found"}}))
             return
-
-        self._set_headers(404)
-        self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "not found"}}))
+        mid = int(m.group(1))
+        model = db.get_model_by_id(mid)
+        if not model:
+            self._set_headers(404)
+            self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "model not found"}}))
+            return
+        # read body
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            length = 0
+        if length <= 0:
+            self._set_headers(400)
+            self.wfile.write(_json_dumps({"error": {"code": "VALIDATION_ERROR", "message": "empty body"}}))
+            return
+        raw = self.rfile.read(length)
+        # sanitize filename
+        orig_name = self.headers.get("X-Filename") or "upload.bin"
+        base = os.path.basename(orig_name)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+        ts = int(time.time() * 1000)
+        # ensure media dir
+        try:
+            os.makedirs(MEDIA_DIR, exist_ok=True)
+        except Exception:
+            pass
+        out_name = f"model_{mid}_{ts}_{safe}"
+        out_path = os.path.join(MEDIA_DIR, out_name)
+        try:
+            with open(out_path, "wb") as f:
+                f.write(raw)
+        except Exception as e:
+            self._set_headers(500)
+            self.wfile.write(_json_dumps({"error": {"code": "WRITE_ERROR", "message": str(e)}}))
+            return
+        image_url = f"/media/{out_name}"
+        # update extra_json.images
+        try:
+            try:
+                current = json.loads(model.get("extra_json") or "{}")
+            except Exception:
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            current.setdefault("images", [])
+            if isinstance(current["images"], list):
+                # 仅保留一张作为封面，后续可扩展为多图
+                current["images"] = [image_url]
+            else:
+                current["images"] = [image_url]
+            with db.get_conn():
+                db.get_conn().execute("UPDATE models SET extra_json=? WHERE id=?", (json.dumps(current, ensure_ascii=False), mid))
+        except Exception:
+            # 写库失败不影响文件保存，但前端需知道
+            self._set_headers(200)
+            self.wfile.write(_json_dumps({"image_url": image_url, "file": out_name, "note": "db_update_failed"}))
+            return
+        self._set_headers(200)
+        self.wfile.write(_json_dumps({"image_url": image_url, "file": out_name}))
 
     def do_DELETE(self):  # noqa: N802
+        """
+        处理DELETE请求，包含权限验证预留
+        """
         parsed = urlparse(self.path)
         path = parsed.path or "/"
 
+        # 权限验证预留接口 - 用于未来的权限控制
+        if not self._check_permission("delete", path):
+            self._set_headers(403)
+            self.wfile.write(_json_dumps({"error": {"code": "PERMISSION_DENIED", "message": "insufficient permissions"}}))
+            return
+
+        # 删除标签
         m = re.match(r"^/tags/(\d+)$", path)
         if m:
             tid = int(m.group(1))
             try:
                 db.delete_tag(tid)
-            except Exception:
-                pass
+            except KeyError:
+                self._set_headers(404)
+                self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "tag not found"}}))
+                return
             self._set_headers(200)
-            self.wfile.write(_json_dumps({"ok": True}))
+            self.wfile.write(_json_dumps({"deleted": True}))
             return
 
-        m = re.match(r"^/models/(\d+)/extra/keys$", path)
+        # 删除模型（仅从数据库中移除记录，不删除文件）
+        m = re.match(r"^/models/(\d+)$", path)
         if m:
             mid = int(m.group(1))
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length) if length > 0 else b""
-            data = _json_loads(body) or {}
             model = db.get_model_by_id(mid)
             if not model:
                 self._set_headers(404)
                 self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "model not found"}}))
                 return
-            keys = data.get("keys") or []
-            try:
-                extra = json.loads(model.get("extra_json") or "{}")
-            except Exception:
-                extra = {}
-            if isinstance(extra, dict):
-                for k in list(keys):
-                    extra.pop(k, None)
-                with db.get_conn():
-                    db.get_conn().execute("UPDATE models SET extra_json=? WHERE id=?", (json.dumps(extra, ensure_ascii=False), mid))
+
+            # 从数据库中删除模型记录
+            with db.get_conn():
+                db.get_conn().execute("DELETE FROM models WHERE id=?", (mid,))
+
             self._set_headers(200)
-            self.wfile.write(_json_dumps(extra if isinstance(extra, dict) else {}))
+            self.wfile.write(_json_dumps({"deleted": True, "note": "Model record removed from database, file unchanged"}))
             return
 
         self._set_headers(404)
         self.wfile.write(_json_dumps({"error": {"code": "NOT_FOUND", "message": "not found"}}))
 
-    def log_message(self, format, *args):  # noqa: A003 - keep signature
-        sys.stderr.write("[backend] " + (format % args) + "\n")
+    def _check_permission(self, action: str, resource: str) -> bool:
+        """
+        权限验证预留接口
+
+        Args:
+            action: 操作类型 (create, read, update, delete)
+            resource: 资源路径
+
+        Returns:
+            bool: 是否有权限执行该操作
+        """
+        # 当前版本默认允许所有�作
+        # 未来可以根据用户身份、角色等进行权限控制
+
+        # 示例：敏感操作可以在这里添加额外验证
+        if action == "delete" and "models" in resource:
+            # 未来可以添加：检查用户是否有删除模型的权限
+            # 例如：return self._validate_user_permission(user_id, "model:delete")
+            pass
+
+        return True  # 当前默认允许所有操作
 
 
-def run_server(host: str, port: int, tries: int = 10):
-    httpd = None
-    bound_port = port
-    for i in range(tries):
-        try:
-            httpd = HTTPServer((host, bound_port), ApiHandler)
-            break
-        except OSError:
-            bound_port += 1
-    if httpd is None:
-        raise RuntimeError(f"cannot bind http server after {tries} tries from {port}")
-    print(f"Hikaze Model Manager backend listening on http://{host}:{bound_port}")
-    print(f"Serving web root: {WEB_DIR}")
-    try:
-        httpd.serve_forever(poll_interval=0.5)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.server_close()
-
-
-def main(argv: Optional[List[str]] = None) -> int:
+def _init_server() -> None:
+    """初始化服务器"""
     global _cfg, _scanner
-    parser = argparse.ArgumentParser(description="Hikaze Model Manager backend")
-    parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--tries", type=int, default=10)
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument("--no-scan", action="store_true", help="do not start scan on boot")
-    args = parser.parse_args(argv)
 
-    # init config & db
-    _cfg = AppConfig.load()
-    if args.host:
-        _cfg.host = args.host
-    if args.port:
-        _cfg.port = args.port
-    db.init_db()
-    _scanner = Scanner(_cfg)
+    if _cfg is None:
+        _cfg = AppConfig.load()
+        print(f"[Hikaze MM] Config loaded: {_cfg.model_roots}")
 
-    if args.check:
-        print(json.dumps({
-            "version": VERSION,
-            "host": _cfg.host,
-            "port": _cfg.port,
-            "model_roots": _cfg.model_roots,
-            "web_dir": WEB_DIR,
-            "data_root": os.path.join(PLUGIN_DIR, "data"),
-        }, indent=2, ensure_ascii=False))
-        return 0
+    if _scanner is None:
+        db.init_db()
+        # 修复：Scanner 需要传入配置实例
+        _scanner = Scanner(_cfg)
+        print("[Hikaze MM] Scanner initialized")
 
-    # optionally kick off a scan
-    if not args.no_scan and _cfg.model_roots:
-        _scanner.start(paths=None, full=False)
 
-    run_server(_cfg.host, _cfg.port, tries=args.tries)
-    return 0
+def main(host: str = None, port: int = None) -> None:
+    """
+    启动HTTP服务�函数
+
+    Args:
+        host: 服务器绑定地址
+        port: 服务器端口
+    """
+    global _cfg
+
+    # 初始化服��器
+    _init_server()
+
+    # 使用传入的参数或配置文件中的值
+    if host is None:
+        host = _cfg.host
+    if port is None:
+        port = _cfg.port
+
+    try:
+        server = HTTPServer((host, port), ApiHandler)
+        print(f"[Hikaze MM] Server running on http://{host}:{port}")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("[Hikaze MM] Server stopped by user")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"[Hikaze MM] Port {port} is already in use")
+        else:
+            print(f"[Hikaze MM] Server error: {e}")
+    except Exception as e:
+        print(f"[Hikaze MM] Unexpected server error: {e}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description="Hikaze Model Manager HTTP Server")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8789, help="Server port (default: 8789)")
+    parser.add_argument("--config", help="Config file path")
+
+    args = parser.parse_args()
+
+    # 如果指定了配置文件，更新全局配置
+    if args.config and os.path.exists(args.config):
+        try:
+            import json
+            with open(args.config, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            _cfg = AppConfig(
+                host=config_data.get('host', args.host),
+                port=config_data.get('port', args.port),
+                model_roots=config_data.get('model_roots', [])
+            )
+        except Exception as e:
+            print(f"[Hikaze MM] Warning: Failed to load config file: {e}")
+
+    main(args.host, args.port)
