@@ -59,6 +59,58 @@ def _json_loads(data: bytes) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
+# 计算 checkpoints 相对路径（ckpt_name），以兼容 ComfyUI 官方加载器
+def _calc_ckpt_name(abs_path: str) -> Optional[str]:
+    try:
+        import folder_paths  # type: ignore
+    except Exception:
+        return None
+    try:
+        ap = os.path.abspath(abs_path)
+        roots = list(folder_paths.get_folder_paths("checkpoints"))  # type: ignore
+        for r in roots:
+            try:
+                rabs = os.path.abspath(r)
+                common = os.path.commonpath([os.path.normcase(rabs), os.path.normcase(ap)])
+                if common == os.path.normcase(rabs):
+                    rel = os.path.relpath(ap, rabs).replace("\\", "/")
+                    return rel
+            except Exception:
+                continue
+        # 未命中任何根：返回文件名做保底
+        return os.path.basename(ap)
+    except Exception:
+        return None
+
+
+# 计算相对路径的通用函数
+def _calc_rel_in_domain(abs_path: str, domain: str) -> Optional[str]:
+    try:
+        import folder_paths  # type: ignore
+    except Exception:
+        return None
+    try:
+        ap = os.path.abspath(abs_path)
+        roots = list(folder_paths.get_folder_paths(domain))  # type: ignore
+        for r in roots:
+            try:
+                rabs = os.path.abspath(r)
+                common = os.path.commonpath([os.path.normcase(rabs), os.path.normcase(ap)])
+                if common == os.path.normcase(rabs):
+                    rel = os.path.relpath(ap, rabs).replace("\\", "/")
+                    return rel
+            except Exception:
+                continue
+        return os.path.basename(ap)
+    except Exception:
+        return None
+
+
+def _is_checkpoint_type(name: Optional[str]) -> bool:
+    n = (name or "").strip().lower()
+    return n in ("checkpoint", "checkpoints")
+
+
 class ApiHandler(SimpleHTTPRequestHandler):
     server_version = f"HikazeMM/{VERSION}"
 
@@ -234,7 +286,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 # support comma-separated and repeated
                 parts = [p for p in t.split(",") if p]
                 tags_list.extend(parts)
-            tags_mode_str = (qs.get("tags_mode", ["all"]) or ["all"])[0]
+            # 解析 tags_mode，避免类型告警
+            tags_mode_vals = qs.get("tags_mode", ["all"]) or ["all"]
+            tags_mode_str = str(tags_mode_vals[0]).lower()
             tm: Literal['all', 'any'] = 'any' if tags_mode_str == 'any' else 'all'
             limit = int(qs.get("limit", ["50"])[0])
             offset = int(qs.get("offset", ["0"])[0])
@@ -257,6 +311,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     extra = None
                 tags = db.list_model_tags(int(m["id"]))
+                ckpt_name = None
+                lora_name = None
+                if _is_checkpoint_type(m.get("type")):
+                    ckpt_name = _calc_ckpt_name(m.get("path") or "")
+                if (m.get("type") or "").strip().lower() in ("lora", "loras"):
+                    lora_name = _calc_rel_in_domain(m.get("path") or "", "loras")
                 out.append({
                     "id": m["id"],
                     "path": m["path"],
@@ -269,6 +329,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     "meta": meta,
                     "extra": extra,
                     "images": (extra or {}).get("images") if isinstance(extra, dict) else None,
+                    "ckpt_name": ckpt_name,
+                    "lora_name": lora_name,
                 })
             self._set_headers(200)
             self.wfile.write(_json_dumps({"items": out, "total": total}))
@@ -292,6 +354,14 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 extra = None
             tags = db.list_model_tags(mid)
             out = {**model, "tags": tags, "meta": meta, "extra": extra}
+            # 添加 ckpt_name（仅 checkpoint）
+            try:
+                if _is_checkpoint_type(out.get("type")):
+                    out["ckpt_name"] = _calc_ckpt_name(out.get("path") or "")
+                if (out.get("type") or "").strip().lower() in ("lora", "loras"):
+                    out["lora_name"] = _calc_rel_in_domain(out.get("path") or "", "loras")
+            except Exception:
+                pass
             # remove internal json text
             out.pop("meta_json", None)
             out.pop("extra_json", None)
@@ -555,7 +625,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 current = {}
             current.setdefault("images", [])
             if isinstance(current["images"], list):
-                # 仅保留一张作为封面，后续可扩展为多图
+                # 仅保留一张作为封面，后续可扩展为多��
                 current["images"] = [image_url]
             else:
                 current["images"] = [image_url]
@@ -576,7 +646,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path or "/"
 
-        # 权限验证预留接口 - 用于未来的权限控制
+        # 权限验证预留接口 - 用于未来��权限控制
         if not self._check_permission("delete", path):
             self._set_headers(403)
             self.wfile.write(_json_dumps({"error": {"code": "PERMISSION_DENIED", "message": "insufficient permissions"}}))
@@ -633,7 +703,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
         # 示例：敏感操作可以在这里添加额外验证
         if action == "delete" and "models" in resource:
-            # 未来可以添加：检查用户是否有删除模型的权限
+            # 未来可以添加：检查用户是否有删除���型的权限
             # 例如：return self._validate_user_permission(user_id, "model:delete")
             pass
 
@@ -657,7 +727,7 @@ def _init_server() -> None:
 
 def main(host: str = None, port: int = None) -> None:
     """
-    启动HTTP服务�函数
+    ���动HTTP服务�函数
 
     Args:
         host: 服务器绑定地址
@@ -668,7 +738,7 @@ def main(host: str = None, port: int = None) -> None:
     # 初始化服��器
     _init_server()
 
-    # 使用传入的参数或配置文件中的值
+    # 使用传入���参数或配置文件中的值
     if host is None:
         host = _cfg.host
     if port is None:
@@ -700,7 +770,6 @@ if __name__ == "__main__":
     # 如果指定了配置文件，更新全局配置
     if args.config and os.path.exists(args.config):
         try:
-            import json
             with open(args.config, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
             _cfg = AppConfig(

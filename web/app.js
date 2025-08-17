@@ -9,6 +9,11 @@
     }
   } catch(_) {}
 
+  const urlParams = new URLSearchParams(location.search || '');
+  const selectorMode = (urlParams.get('mode') === 'selector');
+  const selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint'
+  const selectorRequestId = urlParams.get('requestId') || null;
+
   const state = {
     types: [],
     currentType: null,
@@ -21,6 +26,12 @@
     selectedModel: null,
     originalDetail: null,
     tagCandidates: [], // 可用标签候选（按类型）
+    selector: {
+      on: selectorMode,
+      kind: selectorKind,
+      requestId: selectorRequestId,
+      selectedIds: new Set(), // 新增：多选已选 id 集
+    }
   };
 
   // DOM
@@ -37,7 +48,7 @@
     detailFields: document.getElementById('detailFields'),
     revertBtn: document.getElementById('revertBtn'),
     saveBtn: document.getElementById('saveBtn'),
-    // confirmBtn 移除
+    confirmBtn: document.getElementById('confirmBtn'),
     refreshBtn: document.getElementById('refreshBtn'),
   };
 
@@ -170,6 +181,15 @@
     let t = rows.find(x=>preferred.includes(String(x.name||'').toLowerCase()));
     if (!t && rows.length) t = rows[0];
     state.currentType = t ? t.name : null;
+    // 选择器模式：优先切换到指定 kind（含别名）
+    if (state.selector.on && state.selector.kind) {
+      const want = String(state.selector.kind).toLowerCase();
+      const alias = { checkpoint: 'checkpoint', checkpoints: 'checkpoint', lora: 'lora', loras: 'lora' };
+      const target = alias[want] || want;
+      // 在 /types 返回中匹配目标类型（允许 singular/plural 差异）
+      const found = rows.find(x=> String(x.name||'').toLowerCase() === target || String(x.name||'').toLowerCase() === (target+'s'));
+      if (found) state.currentType = found.name;
+    }
     renderTypeTabs();
   }
 
@@ -314,11 +334,14 @@
     state.models.forEach(m=>{
       const tags = (m.tags||[]).filter(t=>t!==m.type);
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
+      const multiPick = state.selector.on && (String(state.selector.kind||'').toLowerCase() === 'lora' || String(state.selector.kind||'').toLowerCase() === 'loras');
+      const picked = multiPick && state.selector.selectedIds.has(m.id);
+      const pickBox = multiPick ? h('input', {type:'checkbox', checked: picked? '': null, onclick:(e)=>{ e.stopPropagation(); if (state.selector.selectedIds.has(m.id)) state.selector.selectedIds.delete(m.id); else state.selector.selectedIds.add(m.id); updateActionsState(); if (state.viewMode==='cards'){ /* 触发重绘选中样式 */ renderModels(); } else { e.currentTarget.closest('.row')?.classList.toggle('picked', state.selector.selectedIds.has(m.id)); } }}) : null;
       if (state.viewMode === 'cards'){
-        const card = h('div', {class:'card' + (isSel?' selected':''), onclick:()=>selectModel(m)});
-        const checkbox = h('input', {type:'checkbox', class:'select-box', onclick:(e)=>e.stopPropagation()});
+        const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
         const badge = h('span', {class:'badge'}, m.type);
-        const top = h('div', {class:'card-top'}, [checkbox, badge]);
+        const top = h('div', {class:'card-top'}, [badge]);
+        if (pickBox){ top.appendChild(h('span', {style:{marginLeft:'auto'}}, pickBox)); }
         const bg = h('div', {class:'bg'});
         const name = h('div', {class:'name'}, m.name || m.path);
         const tagRow = h('div', {class:'tags'}, tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)));
@@ -330,9 +353,9 @@
         }
         el.modelsContainer.appendChild(card);
       } else {
-        const row = h('div', {class:'row' + (isSel?' selected':''), onclick:()=>selectModel(m)});
+        const row = h('div', {class:'row' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
+        if (pickBox) row.appendChild(h('span', {class:'row-pick'}, pickBox));
         row.append(
-          h('input', {type:'checkbox', class:'select-box', onclick:(e)=>e.stopPropagation()}),
           h('span', {class:'row-name'}, m.name || m.path),
           h('span', {class:'row-tags'}, tags.map(t=>h('span', {class:'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)))
         );
@@ -490,7 +513,7 @@
     el.detailFields.append(
       h('label', {class:'field'}, [h('span', {class:'label'}, '标签')])
     );
-    // 标签编辑器框置于 label 外，���独占一行
+    // 标签编辑器框置于 label 外，独占一行
     el.detailFields.append(tagsEditor);
     // Prompts 标题与编辑器（保持原有结构）
     el.detailFields.append(
@@ -503,8 +526,29 @@
   function updateActionsState(){
     if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
     const has = !!state.selectedModel;
-    el.saveBtn.disabled = !has;
-    el.revertBtn.disabled = !has;
+    if (state.selector.on){
+      el.saveBtn.style.display = 'none';
+      el.revertBtn.style.display = 'none';
+      if (el.confirmBtn){
+        el.confirmBtn.style.display = '';
+        const kind = String(state.selector.kind||'').toLowerCase();
+        let can = false;
+        if (kind === 'checkpoint' || kind === 'checkpoints') {
+          can = !!(state.selectedModel && state.selectedModel.ckpt_name);
+        } else if (kind === 'lora' || kind === 'loras') {
+          can = state.selector.selectedIds && state.selector.selectedIds.size > 0;
+        } else {
+          can = has;
+        }
+        el.confirmBtn.disabled = !can;
+      }
+    } else {
+      el.saveBtn.style.display = '';
+      el.revertBtn.style.display = '';
+      el.saveBtn.disabled = !has;
+      el.revertBtn.disabled = !has;
+      if (el.confirmBtn) el.confirmBtn.style.display = 'none';
+    }
   }
 
   function createPromptsEditor(m){
@@ -560,11 +604,56 @@
     await Promise.all([loadFacets(), loadModels()]);
   }
 
+  function sendSelection(){
+    if (!state.selector.on) return;
+    const kind = (state.selector.kind || 'checkpoint').toLowerCase();
+    if (kind === 'lora' || kind === 'loras'){
+      const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
+      if (!picked.length) { alert('请至少选择一个 LoRA'); return; }
+      const items = picked.map(m=>{
+        const base = (m.path ? (m.path.split(/[\/\\]/).pop()||'') : (m.name||''));
+        const value = base; // 仅传文件名，避免绝对路径
+        const label = (m && (m.name || base)) || String(value);
+        return { value, label };
+      });
+      const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items } };
+      try { window.parent.postMessage(msg, '*'); } catch(_) {}
+      return;
+    }
+    // 默认 checkpoint 单选
+    const m = state.selectedModel;
+    if (!m) { alert('未选择模型'); return; }
+    let value = null;
+    if (kind === 'checkpoint' || kind === 'checkpoints') {
+      value = m.ckpt_name || null;
+    } else {
+      value = m.path || m.name || null;
+    }
+    if (!value) { alert('无有效选择'); return; }
+    const label = (m && (m.name || (m.path ? m.path.split(/[\/\\]/).pop() : ''))) || String(value);
+    const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind, value, label } };
+    try { window.parent.postMessage(msg, '*'); } catch(_) {}
+  }
+
   async function boot(){
     console.debug('[HikazeMM] boot start');
     wire();
     await loadTypes();
     await updateAll();
+    // 选择器模式 UI 调整
+    if (state.selector.on){
+      try { if (el.typeTabs) el.typeTabs.style.display = 'none'; } catch(_) {}
+    }
+    // 选择器模式下：绑定回车快捷确认
+    if (state.selector.on && el.confirmBtn){
+      bind(el.confirmBtn, 'click', ()=> sendSelection());
+      document.addEventListener('keydown', (e)=>{
+        if (e.key === 'Enter'){
+          e.preventDefault();
+          sendSelection();
+        }
+      });
+    }
     console.debug('[HikazeMM] boot done');
   }
 

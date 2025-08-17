@@ -9,7 +9,8 @@ const HikazeManager = {
     stylesLoaded: false,
     menuButton: null,
     initAttempts: 0,
-    maxInitAttempts: 30
+    maxInitAttempts: 30,
+    pending: new Map(), // requestId -> { node, widget, overlay }
 };
 
 // 内联样式 - 避免外部CSS加载问题
@@ -118,13 +119,10 @@ async function waitForServer(maxWaitTime = 15000) {
     return false;
 }
 
-// 创建模态窗口
-function createModalWindow() {
+// 创建通用模态窗口
+function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/' } = {}) {
     loadStyles();
-    if (HikazeManager.modalWindow && document.body.contains(HikazeManager.modalWindow)) {
-        HikazeManager.modalWindow.style.display = 'block';
-        return;
-    }
+
     const vw = window.innerWidth; const vh = window.innerHeight;
     const modalWidth = Math.floor(vw * 0.6); const modalHeight = Math.floor(vh * 0.6);
     const left = Math.max( (vw - modalWidth) >> 1, 10 );
@@ -133,9 +131,9 @@ function createModalWindow() {
     const overlay = document.createElement('div');
     overlay.className = 'hikaze-modal-overlay';
     overlay.innerHTML = `
-        <div class="hikaze-modal-window" style="width:${modalWidth}px;height:${modalHeight}px;left:${left}px;top:${top}px;">
+        <div class="hikaze-modal-window">
             <div class="hikaze-modal-header">
-                <h3>🎨 Hikaze Model Manager</h3>
+                <h3>${title}</h3>
                 <div class="hikaze-modal-controls">
                     <button class="hikaze-modal-close" title="关闭">×</button>
                 </div>
@@ -148,40 +146,38 @@ function createModalWindow() {
             </div>
         </div>`;
     document.body.appendChild(overlay);
-    HikazeManager.modalWindow = overlay;
 
-    setupModalEvents(overlay);
-    loadModalContent(overlay);
-}
-
-// 设置模态窗口事件
-function setupModalEvents(overlay) {
     const modal = overlay.querySelector('.hikaze-modal-window');
     const header = overlay.querySelector('.hikaze-modal-header');
     const closeBtn = overlay.querySelector('.hikaze-modal-close');
 
-    // 关闭函数：移除DOM与事件
+    // 通过JS设置尺寸与位置，避免内联样式解析问题
+    if (modal) {
+        try {
+            modal.style.width = modalWidth + 'px';
+            modal.style.height = modalHeight + 'px';
+            modal.style.left = left + 'px';
+            modal.style.top = top + 'px';
+        } catch(_) {}
+    }
+
     const escHandler = (e) => { if (e.key === 'Escape') doClose(); };
     const doClose = () => {
         document.removeEventListener('keydown', escHandler);
         if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        if (HikazeManager.modalWindow === overlay) HikazeManager.modalWindow = null;
     };
 
     if (closeBtn) closeBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); doClose(); };
     document.addEventListener('keydown', escHandler);
+    overlay.onclick = (e) => { /* prevent accidental close */ };
 
-    // 背景点击不关闭，避免误触；如需可改为关闭
-    overlay.onclick = (e) => { /* no-op to prevent accidental close */ };
-
-    // 拖拽：仅标题栏可拖动
+    // 拖拽
     if (header && modal) {
         let isDragging = false; let startX = 0, startY = 0; let startLeft = 0, startTop = 0;
         header.onmousedown = (e) => {
-            if (e.target === closeBtn) return; // 点×不拖拽
+            if (e.target === closeBtn) return;
             isDragging = true;
             startX = e.clientX; startY = e.clientY;
-            // 确保存在初始 left/top
             const ml = parseInt(modal.style.left || '0', 10) || modal.getBoundingClientRect().left;
             const mt = parseInt(modal.style.top || '0', 10) || modal.getBoundingClientRect().top;
             startLeft = ml; startTop = mt;
@@ -201,34 +197,44 @@ function setupModalEvents(overlay) {
             e.preventDefault();
         };
     }
-}
 
-// 加载模态窗口内���
-function loadModalContent(overlay) {
-    const loading = overlay.querySelector('.hikaze-loading');
-    waitForServer().then((serverReady) => {
-        if (!serverReady) {
-            if (loading) loading.innerHTML = '<div class="hikaze-error">⚠️ 后端未就绪</div>';
-            return;
-        }
+    // 加载 iframe
+    (async () => {
+        const loading = overlay.querySelector('.hikaze-loading');
+        const ok = await waitForServer();
+        if (!ok) { if (loading) loading.innerHTML = '<div class="hikaze-error">⚠️ 后端未就绪</div>'; return; }
         const iframe = document.createElement('iframe');
-        iframe.src = 'http://127.0.0.1:8789/web/';
+        iframe.src = iframeSrc;
         iframe.onload = () => { if (loading) loading.style.display = 'none'; };
         iframe.onerror = () => { if (loading) loading.innerHTML = '<div class="hikaze-error">⚠️ 无法加载</div>'; };
         const content = overlay.querySelector('.hikaze-modal-content');
         if (content) content.appendChild(iframe);
-    });
+    })();
+
+    return overlay;
 }
 
 // 打开模型管理器
 function openModelManager() {
     try {
         console.log('[Hikaze] Opening model manager...');
-        createModalWindow();
+        // 缓存：保留原有单例（不与选择器共享）
+        if (HikazeManager.modalWindow && document.body.contains(HikazeManager.modalWindow)) {
+            HikazeManager.modalWindow.style.display = 'block';
+            return;
+        }
+        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/' });
     } catch (error) {
         console.error('[Hikaze] Error opening model manager:', error);
         alert('打开模型管理器时发生错误: ' + error.message);
     }
+}
+
+// 打开������选择器（selector 模式）
+function openModelSelector({ kind = 'checkpoint', requestId }) {
+    const qs = new URLSearchParams({ mode: 'selector', kind: kind, requestId: requestId || '' });
+    const overlay = createOverlay({ title: '🧩 选择模型', iframeSrc: `http://127.0.0.1:8789/web/?${qs.toString()}` });
+    return overlay;
 }
 
 // 创建菜单按钮
@@ -279,10 +285,137 @@ function tryMenuIntegration() {
     return false;
 }
 
-// 移除“编辑”菜单注入（按需可恢复）
-async function addToEditMenu() {
-    // 已禁用：仅保留右上角按钮作为入口
-    return false;
+// 监听选择结果
+function setupMessageListener(){
+    window.addEventListener('message', (ev)=>{
+        const data = ev && ev.data;
+        if (!data || data.type !== 'hikaze-mm-select') return;
+        const { requestId, payload } = data;
+        const ctx = HikazeManager.pending.get(requestId);
+        if (!ctx) return;
+        try{
+            const { node, wName, wPath, overlay, mode } = ctx;
+            // LoRA 批量回填
+            if (payload && (payload.kind === 'lora' || payload.kind === 'loras') && Array.isArray(payload.items) && node && node.comfyClass === 'HikazePowerLoraLoader'){
+                addLoraRows(node, payload.items);
+                // 刷新画布
+                try { node.setDirtyCanvas(true, true); } catch(_) {}
+                try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                return;
+            }
+            const pathVal = payload && payload.value ? String(payload.value) : '';
+            const nameVal = payload && (payload.label || payload.value) ? String(payload.label || payload.value) : '';
+            // 通用单值回填（如 checkpoint）
+            if (wPath){
+                try { wPath.value = pathVal; } catch(_) {}
+                try { if (wPath.inputEl) wPath.inputEl.value = pathVal; } catch(_) {}
+            }
+            if (wName){
+                try { wName.value = nameVal; } catch(_) {}
+                try { if (wName.inputEl) wName.inputEl.value = nameVal; } catch(_) {}
+                try {
+                    if (wName.element && wName.element.tagName && wName.element.value !== undefined) {
+                        wName.element.value = nameVal;
+                    }
+                } catch(_) {}
+            }
+            try { node.setDirtyCanvas(true, true); } catch(_) {}
+            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
+            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        } finally {
+            HikazeManager.pending.delete(requestId);
+        }
+    });
+}
+
+// 为节点注入“读取”按钮并将 ckpt_name 设为隐藏、model_name 只读显示
+function enhanceCheckpointSelectorNode(node){
+    try{
+        if (!node || node.comfyClass !== 'HikazeCheckpointSelector') return;
+        if (!Array.isArray(node.widgets)) return;
+        const wPath = node.widgets.find(w=> w && (w.name === 'ckpt_name' || w.label === 'ckpt_name'));
+        // 保持原版下拉：不禁用不隐藏，让用户可直接从下拉选择
+        if (wPath){
+            try { wPath.readonly = false; wPath.disabled = false; wPath.hidden = false; } catch(_) {}
+            if (wPath.options) { try { wPath.options.readonly = false; } catch(_) {} }
+        }
+        // 添加“读取”按钮：作为补充选择方式
+        const btn = node.addWidget && node.addWidget('button', '读取', '读取', () => {
+            const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+            const overlay = openModelSelector({ kind: 'checkpoint', requestId });
+            HikazeManager.pending.set(requestId, { node, wPath, overlay });
+        }, { serialize: false });
+        if (btn) btn.label = '读取';
+        try { node.setDirtyCanvas(true, true); } catch(_) {}
+    } catch(err){
+        console.warn('[Hikaze] enhance node failed:', err);
+    }
+}
+
+// 工具：在 Power LoRA Loader 上新增若干行 widgets
+function addLoraRows(node, items){
+    try{
+        if (!node || !Array.isArray(items)) return;
+        const nextIndex = (()=>{
+            let maxI = -1;
+            const re = /^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/;
+            const list = Array.isArray(node.widgets) ? node.widgets : [];
+            for (const w of list){
+                const name = w && (w.name || w.label);
+                if (!name || typeof name !== 'string') continue;
+                const m = name.match(re);
+                if (m){ const i = parseInt(m[1], 10); if (!Number.isNaN(i)) maxI = Math.max(maxI, i); }
+            }
+            return (maxI + 1);
+        })();
+        let i = nextIndex;
+        const addOne = (val, label)=>{
+            const idx = i++;
+            const keyBase = `lora_${idx}`;
+            // on 开关
+            const wOn = node.addWidget && node.addWidget('checkbox', `${keyBase}_on`, true, (v)=>{ /* no-op */ }, { serialize: true });
+            if (wOn) { wOn.label = `${keyBase}_on`; }
+            // 名称文本（loras 相对路径/文件名）
+            const wName = node.addWidget && node.addWidget('text', keyBase, String(val||''), (v)=>{ /* no-op */ }, { serialize: true });
+            // 模型强度
+            const wSm = node.addWidget && node.addWidget('number', `${keyBase}_strength_model`, 1.0, (v)=>{ /* no-op */ }, { serialize: true, min: -4, max: 4, step: 0.05 });
+            // CLIP 强度
+            const wSc = node.addWidget && node.addWidget('number', `${keyBase}_strength_clip`, 1.0, (v)=>{ /* no-op */ }, { serialize: true, min: -4, max: 4, step: 0.05 });
+            // UI 微调
+            try { if (wName) wName.serialize = true; } catch(_) {}
+            try { if (wSm) wSm.serialize = true; } catch(_) {}
+            try { if (wSc) wSc.serialize = true; } catch(_) {}
+        };
+        items.forEach(it=> addOne(it && (it.value || it.label || '')));
+    }catch(err){
+        console.warn('[Hikaze] addLoraRows failed:', err);
+    }
+}
+
+// 增强 LoRA Loader：添加 bypass 与“选择模型”按钮
+function enhancePowerLoraLoaderNode(node){
+    try{
+        if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
+        if (!Array.isArray(node.widgets)) node.widgets = [];
+        // 如未存在 bypass，则添加
+        const hasBypass = node.widgets.some(w=> w && (w.name === 'bypass' || w.label === 'bypass'));
+        if (!hasBypass){
+            const wBy = node.addWidget && node.addWidget('checkbox', 'bypass', false, (v)=>{ /* 透传 */ }, { serialize: true });
+            if (wBy) wBy.label = '禁用全部LoRA（bypass）';
+        }
+        // 添加“选择模型”按钮（LoRA 多选）
+        const btn = node.addWidget && node.addWidget('button', '选择模型…', '选择模型…', () => {
+            const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+            const overlay = openModelSelector({ kind: 'lora', requestId });
+            HikazeManager.pending.set(requestId, { node, overlay, mode: 'lora-batch' });
+        }, { serialize: false });
+        if (btn) btn.label = '选择模型…';
+        try { node.setDirtyCanvas(true, true); } catch(_) {}
+    } catch(err){
+        console.warn('[Hikaze] enhance power lora node failed:', err);
+    }
 }
 
 // ComfyUI扩展注册
@@ -299,7 +432,8 @@ app.registerExtension({
         setTimeout(() => {
             // 仅保留右上角按钮
             tryMenuIntegration();
-            // 不再尝试在“编辑”菜单添加入口
+            // 选择结果监听
+            setupMessageListener();
         }, 2000);
 
         // 检查服务器状态
@@ -307,13 +441,20 @@ app.registerExtension({
             const isReady = await checkServerStatus();
             console.log(isReady ? '[Hikaze] Backend server is ready' : '[Hikaze] Backend server not ready, will retry when opening manager');
         }, 3000);
+    },
+
+    async nodeCreated(node){
+        // 增强我们自定义的节点
+        enhanceCheckpointSelectorNode(node);
+        enhancePowerLoraLoaderNode(node);
     }
 });
 
-// 全局函数导出
+// 全局函数导��
 window.hikazeOpenManager = openModelManager;
 window.hikazeManager = {
     open: openModelManager,
+    openSelector: (kind, requestId)=> openModelSelector({kind, requestId}),
     isServerStarted: () => HikazeManager.isServerStarted,
     checkServer: checkServerStatus
 };

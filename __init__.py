@@ -66,6 +66,30 @@ try:
 except Exception as e:
     print(f"[Hikaze Model Manager] Error during initialization: {e}")
 
+# 注册自定义节点
+try:
+    from .nodes.checkpoint_selector import (
+        NODE_CLASS_MAPPINGS as _CS_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as _CS_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+    NODE_CLASS_MAPPINGS.update(_CS_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_CS_NODE_DISPLAY_NAME_MAPPINGS)
+    print("[Hikaze Model Manager] Nodes registered: ", list(_CS_NODE_CLASS_MAPPINGS.keys()))
+except Exception as e:
+    print(f"[Hikaze Model Manager] Failed to register nodes: {e}")
+
+# 新增注册：Power LoRA Loader
+try:
+    from .nodes.power_lora_loader import (
+        NODE_CLASS_MAPPINGS as _PL_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as _PL_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+    NODE_CLASS_MAPPINGS.update(_PL_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_PL_NODE_DISPLAY_NAME_MAPPINGS)
+    print("[Hikaze Model Manager] Nodes registered: ", list(_PL_NODE_CLASS_MAPPINGS.keys()))
+except Exception as e:
+    print(f"[Hikaze Model Manager] Failed to register Power LoRA Loader: {e}")
+
 __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
