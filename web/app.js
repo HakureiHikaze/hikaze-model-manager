@@ -13,6 +13,21 @@
   const selectorMode = (urlParams.get('mode') === 'selector');
   const selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint'
   const selectorRequestId = urlParams.get('requestId') || null;
+  // 新增：规范化类型名（复用后端别名规则的子集）
+  function normalizeTypeName(n){
+    const m = String(n||'').trim().toLowerCase();
+    const alias = { checkpoints: 'checkpoint', loras: 'lora', embeddings: 'embedding', vaes: 'vae' };
+    return alias[m] || m;
+  }
+  // 新增：预选 keys（来自 URL selected 参数，逗号分隔）
+  const selectorPreselectedRaw = urlParams.get('selected') || '';
+  const preselectedKeys = new Set(
+    (selectorPreselectedRaw || '')
+      .split(',')
+      .map(s=>decodeURIComponent(s).trim())
+      .filter(Boolean)
+      .map(s=>s.toLowerCase())
+  );
 
   const state = {
     types: [],
@@ -30,7 +45,8 @@
       on: selectorMode,
       kind: selectorKind,
       requestId: selectorRequestId,
-      selectedIds: new Set(), // 新增：多选已选 id 集
+      selectedIds: new Set(), // 多选已选 id 集
+      preKeys: preselectedKeys, // 新增：预选 identity keys
     }
   };
 
@@ -183,12 +199,9 @@
     state.currentType = t ? t.name : null;
     // 选择器模式：优先切换到指定 kind（含别名）
     if (state.selector.on && state.selector.kind) {
-      const want = String(state.selector.kind).toLowerCase();
-      const alias = { checkpoint: 'checkpoint', checkpoints: 'checkpoint', lora: 'lora', loras: 'lora' };
-      const target = alias[want] || want;
-      // 在 /types 返回中匹配目标类型（允许 singular/plural 差异）
-      const found = rows.find(x=> String(x.name||'').toLowerCase() === target || String(x.name||'').toLowerCase() === (target+'s'));
-      if (found) state.currentType = found.name;
+      const want = normalizeTypeName(state.selector.kind);
+      const found = rows.find(x=> normalizeTypeName(x && x.name) === want || String(x && x.name).toLowerCase() === (want+'s'));
+      if (found) state.currentType = found.name; else state.currentType = state.currentType || want;
     }
     renderTypeTabs();
   }
@@ -207,17 +220,20 @@
 
   // Tags facets & dropdown
   async function loadFacets(){
-    if (!state.currentType) { el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
+    // 选择器模式下强制使用 kind 作为过滤类型（当 currentType 缺失时）
+    const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
+    const effectiveType = state.currentType || forcedType;
+    if (!effectiveType) { if (el.tagDropdown) el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
     const selected = Array.from(state.selectedTags).join(',');
     const url = new URL(location.origin + '/tags/facets');
-    if (state.currentType) url.searchParams.set('type', state.currentType);
+    if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (selected) url.searchParams.set('selected', selected);
     url.searchParams.set('mode', state.tagsMode);
     const facets = await api(url.pathname + '?' + url.searchParams.toString());
     try {
       const byTypeUrl = new URL(location.origin + '/tags/by-type');
-      byTypeUrl.searchParams.set('type', state.currentType);
+      byTypeUrl.searchParams.set('type', effectiveType);
       const allTags = await api(byTypeUrl.pathname + '?' + byTypeUrl.searchParams.toString());
       if (Array.isArray(allTags)) {
         state.tagCandidates = allTags
@@ -255,7 +271,10 @@
   // Models
   async function loadModels(){
     const url = new URL(location.origin + '/models');
-    if (state.currentType) url.searchParams.set('type', state.currentType);
+    // 选择器模式优先用 /types 命中的真实类型，其次才使用 URL kind 规范化，保证仅列出该大类
+    const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
+    const effectiveType = state.currentType || forcedType;
+    if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (state.selectedTags.size>0) url.searchParams.append('tags', Array.from(state.selectedTags).join(','));
     url.searchParams.set('tags_mode', state.tagsMode);
@@ -263,6 +282,15 @@
     const data = await api(url.pathname + '?' + url.searchParams.toString());
     state.models = data.items || [];
     state.total = data.total || 0;
+    // 新增：将预选 keys 映射到当前批次 items 的 id 集合
+    if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
+      for (const m of state.models){
+        const key = identityForModel(m);
+        if (key && state.selector.preKeys.has(key)){
+          state.selector.selectedIds.add(m.id);
+        }
+      }
+    }
     if (state.selectedModel) {
       const found = state.models.find(it=> it && it.id === state.selectedModel.id);
       if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
@@ -336,7 +364,7 @@
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
       const multiPick = state.selector.on && (String(state.selector.kind||'').toLowerCase() === 'lora' || String(state.selector.kind||'').toLowerCase() === 'loras');
       const picked = multiPick && state.selector.selectedIds.has(m.id);
-      const pickBox = multiPick ? h('input', {type:'checkbox', checked: picked? '': null, onclick:(e)=>{ e.stopPropagation(); if (state.selector.selectedIds.has(m.id)) state.selector.selectedIds.delete(m.id); else state.selector.selectedIds.add(m.id); updateActionsState(); if (state.viewMode==='cards'){ /* 触发重绘选中样式 */ renderModels(); } else { e.currentTarget.closest('.row')?.classList.toggle('picked', state.selector.selectedIds.has(m.id)); } }}) : null;
+      const pickBox = multiPick ? h('input', {type:'checkbox', checked: picked? '': null, onclick:(e)=>{ e.stopPropagation(); if (state.selector.selectedIds.has(m.id)) state.selector.selectedIds.delete(m.id); else state.selector.selectedIds.add(m.id); updateActionsState(); if (state.viewMode==='cards'){ renderModels(); } else { e.currentTarget.closest('.row')?.classList.toggle('picked', state.selector.selectedIds.has(m.id)); } }}) : null;
       if (state.viewMode === 'cards'){
         const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
         const badge = h('span', {class:'badge'}, m.type);
@@ -604,19 +632,21 @@
     await Promise.all([loadFacets(), loadModels()]);
   }
 
-  function sendSelection(){
+  function sendSelection(ev){
     if (!state.selector.on) return;
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
+    // Shift 按住表示追加；默认替换
+    const mode = (ev && ev.shiftKey) ? 'append' : 'replace';
     if (kind === 'lora' || kind === 'loras'){
       const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
       if (!picked.length) { alert('请至少选择一个 LoRA'); return; }
       const items = picked.map(m=>{
-        const base = (m.path ? (m.path.split(/[\/\\]/).pop()||'') : (m.name||''));
-        const value = base; // 仅传文件名，避免绝对路径
+        const base = (m.path ? (m.path.split(/[\\/]/).pop()||'') : (m.name||''));
+        const value = (m && m.lora_name) ? m.lora_name : base; // 优先相对名
         const label = (m && (m.name || base)) || String(value);
         return { value, label };
       });
-      const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items } };
+      const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items, mode } };
       try { window.parent.postMessage(msg, '*'); } catch(_) {}
       return;
     }
@@ -630,7 +660,7 @@
       value = m.path || m.name || null;
     }
     if (!value) { alert('无有效选择'); return; }
-    const label = (m && (m.name || (m.path ? m.path.split(/[\/\\]/).pop() : ''))) || String(value);
+    const label = (m && (m.name || (m.path ? m.path.split(/[\\/]/).pop() : ''))) || String(value);
     const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind, value, label } };
     try { window.parent.postMessage(msg, '*'); } catch(_) {}
   }
@@ -646,11 +676,11 @@
     }
     // 选择器模式下：绑定回车快捷确认
     if (state.selector.on && el.confirmBtn){
-      bind(el.confirmBtn, 'click', ()=> sendSelection());
+      bind(el.confirmBtn, 'click', (e)=> sendSelection(e));
       document.addEventListener('keydown', (e)=>{
         if (e.key === 'Enter'){
           e.preventDefault();
-          sendSelection();
+          sendSelection(e);
         }
       });
     }
