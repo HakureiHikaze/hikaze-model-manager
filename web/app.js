@@ -92,6 +92,22 @@
       .map(s=>s.toLowerCase())
   );
 
+  // Added: preselected items with strength data (from URL 'selectedData' param)
+  const selectorPreselectedData = urlParams.get('selectedData');
+  let preselectedItems = [];
+  try {
+    if (selectorPreselectedData) {
+      const decoded = decodeURIComponent(selectorPreselectedData);
+      const parsed = JSON.parse(decoded);
+      if (Array.isArray(parsed)) {
+        preselectedItems = parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('[HikazeMM] Failed to parse selectedData:', err);
+    preselectedItems = [];
+  }
+
   const state = {
     types: [],
     currentType: null,
@@ -100,6 +116,10 @@
     viewMode: 'cards',
     models: [],
     total: 0,
+    page: 1,
+    limit: 500,
+    loading: false,
+    hasMore: true,
     selectedModel: null,
     originalDetail: null,
     tagCandidates: [], // available tag candidates (by type)
@@ -149,7 +169,6 @@
   }
 
   // Helpers
-  const qsa = (sel, root=document)=>Array.from(root.querySelectorAll(sel));
   const h = (tag, props={}, ...children)=>{
     const e = document.createElement(tag);
     Object.entries(props||{}).forEach(([k,v])=>{
@@ -279,7 +298,7 @@
     state.types.forEach(t=>{
       const btn = h('button', {
         class: 'tab' + (state.currentType===t.name?' active':'') ,
-        onclick: ()=>{ state.currentType = t.name; state.selectedTags.clear(); renderTypeTabs(); updateAll(); }
+        onclick: ()=>{ state.currentType = t.name; state.selectedTags.clear(); renderTypeTabs(); resetAndLoad(); }
       }, `${t.name} (${t.count})`);
       el.typeTabs.appendChild(btn);
     });
@@ -330,7 +349,7 @@
       const btn = h('button', {class:'tag-item' + (active?' active':'') + (disabled?' disabled':''), onclick: ()=>{
         if (disabled) return;
         if (active) state.selectedTags.delete(f.name); else state.selectedTags.add(f.name);
-        updateAll();
+        resetAndLoad();
       }}, `${f.name} (${f.count})`);
       el.tagDropdown.appendChild(btn);
     });
@@ -338,6 +357,9 @@
 
   // Models
   async function loadModels(){
+    if (state.loading || !state.hasMore) return;
+    state.loading = true;
+
     const url = new URL(location.origin + '/models');
     // In selector mode, try to use the real type from /types first; then fall back to normalized kind from URL to restrict the main category
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
@@ -347,25 +369,55 @@
     if (state.selectedTags.size>0) url.searchParams.append('tags', Array.from(state.selectedTags).join(','));
     // always use ALL mode for tags filtering
     url.searchParams.set('tags_mode', 'all');
-    url.searchParams.set('limit', '100');
-    const data = await api(url.pathname + '?' + url.searchParams.toString());
-    state.models = data.items || [];
-    state.total = data.total || 0;
-    // map preselected keys for lora
-    if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
-      for (const m of state.models){
-        const key = identityForModel(m);
-        if (key && state.selector.preKeys.has(key)){
-          state.selector.selectedIds.add(m.id);
-          if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
+    url.searchParams.set('limit', String(state.limit));
+    url.searchParams.set('offset', String((state.page - 1) * state.limit));
+
+    try {
+      const data = await api(url.pathname + '?' + url.searchParams.toString());
+      const newModels = data.items || [];
+      state.models.push(...newModels);
+      state.total = data.total || 0;
+      state.page++;
+      state.hasMore = state.models.length < state.total;
+
+      // map preselected keys for lora
+      if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
+        for (const m of newModels){ // Only check new models
+          const key = identityForModel(m);
+          if (key && state.selector.preKeys.has(key)){
+            state.selector.selectedIds.add(m.id);
+            if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
+          }
         }
       }
+
+      // map preselected items with strength data for lora
+      if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && preselectedItems.length) {
+        for (const m of newModels) {
+          const key = identityForModel(m);
+          if (key) {
+            // Find matching preselected item
+            const preselected = preselectedItems.find(item => normalizeKey(item.key) === key);
+            if (preselected) {
+              state.selector.selectedIds.add(m.id);
+              state.selector.strengths.set(m.id, {
+                sm: Number(preselected.sm) || 1.0,
+                sc: Number(preselected.sc) || 1.0
+              });
+            }
+          }
+        }
+      }
+      if (state.selectedModel) {
+        const found = state.models.find(it=> it && it.id === state.selectedModel.id);
+        if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
+      }
+      renderModels(true); // Append models
+    } catch (err) {
+      console.error('[HikazeMM] Failed to load models:', err);
+    } finally {
+      state.loading = false;
     }
-    if (state.selectedModel) {
-      const found = state.models.find(it=> it && it.id === state.selectedModel.id);
-      if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
-    }
-    renderModels();
   }
 
   // Hover preview
@@ -421,11 +473,16 @@
     }, 350);
   }
 
-  function renderModels(){
+  function renderModels(append = false){
     if (!exists(el.modelsContainer, 'modelsContainer')) return;
     el.modelsContainer.className = state.viewMode === 'cards' ? 'cards' : 'list';
-    el.modelsContainer.innerHTML = '';
-    if (!state.models.length){
+    if (!append) {
+      el.modelsContainer.innerHTML = '';
+    }
+
+    const modelsToRender = append ? state.models.slice(-state.limit) : state.models;
+
+    if (!append && !modelsToRender.length){
       el.modelsContainer.appendChild(h('div', {class:'empty'}, t('mm.empty')));
       return;
     }
@@ -444,7 +501,7 @@
       wrap.append(smLab, sm, scLab, sc);
       return wrap;
     };
-    state.models.forEach(m=>{
+    modelsToRender.forEach(m=>{
       const tags = (m.tags||[]).filter(t=>t!==m.type);
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
       const picked = isLoraSelector && state.selector.selectedIds.has(m.id);
@@ -457,7 +514,7 @@
             state.originalDetail = JSON.parse(JSON.stringify(m));
             updateActionsState();
             renderDetail();
-            renderModels();
+            renderModels(); // Re-render all to update selection styles
           } else {
             selectModel(m);
           }
@@ -472,7 +529,7 @@
             if (on) includeModel(m); else removeModel(m);
             updateActionsState();
             // If just unchecked while card is highlighted, keep right panel content to match "most recent selection" behavior
-            renderModels();
+            renderModels(); // Re-render all
           }});
           topChildren.push(h('span', {style:{marginLeft:'auto'}}, chk));
         }
@@ -497,7 +554,7 @@
             state.originalDetail = JSON.parse(JSON.stringify(m));
             updateActionsState();
             renderDetail();
-            renderModels();
+            renderModels(); // Re-render all
           } else {
             selectModel(m);
           }
@@ -733,10 +790,6 @@
 
   function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
 
-  async function updateAll(){
-    await Promise.all([loadFacets(), loadModels()]);
-  }
-
   function sendSelection(ev){
     if (!state.selector.on) return;
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
@@ -884,6 +937,36 @@
       el.revertBtn.disabled = !has;
       if (el.confirmBtn) el.confirmBtn.style.display = 'none';
     }
+  }
+
+  // Ensure view mode buttons reflect current state
+  function updateViewModeButtons(){
+    try{
+      if (el.cardViewBtn){
+        if (state.viewMode === 'cards') el.cardViewBtn.classList.add('active');
+        else el.cardViewBtn.classList.remove('active');
+      }
+      if (el.listViewBtn){
+        if (state.viewMode === 'list') el.listViewBtn.classList.add('active');
+        else el.listViewBtn.classList.remove('active');
+      }
+    }catch(err){ console.warn('[HikazeMM] updateViewModeButtons failed', err); }
+  }
+
+  function resetAndLoad(){
+    state.page = 1;
+    state.models = [];
+    state.hasMore = true;
+    state.loading = false;
+    if (el.modelsContainer) el.modelsContainer.scrollTop = 0;
+    updateAll();
+  }
+
+  async function updateAll(){
+    await Promise.all([loadFacets(), loadModels()]);
+    updateViewModeButtons();
+    updateActionsState();
+    renderDetail();
   }
 
   boot().catch(err=>{
