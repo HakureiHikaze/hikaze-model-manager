@@ -19,10 +19,9 @@ from __future__ import annotations
 from typing import Dict, Tuple, Any
 
 import folder_paths  # type: ignore
-import comfy.utils  # type: ignore
-import comfy.sd  # type: ignore
 import numbers
 import json
+from nodes import LoraLoader  # type: ignore
 
 
 class HikazePowerLoraLoader:
@@ -32,8 +31,8 @@ class HikazePowerLoraLoader:
     MAX_LORAS = 16
 
     def __init__(self) -> None:
-        # Simple cache: path -> loaded state dict, to avoid reloading repeatedly
-        self._lora_cache: Dict[str, Any] = {}
+        # No longer need LoRA cache since we use ComfyUI's standard loader
+        pass
 
     @classmethod
     def INPUT_TYPES(cls):  # noqa: N802 (ComfyUI convention)
@@ -96,13 +95,16 @@ class HikazePowerLoraLoader:
     )
 
     # --- helpers ---
-    def _resolve_lora_path(self, name: str) -> str:
-        """Resolve a LoRA relative name to its absolute file path.
+    def _resolve_lora_name(self, name: str) -> str:
+        """Resolve a LoRA relative name to a valid LoRA name for ComfyUI.
         Accepts subfolder paths like "subdir/file.safetensors".
-        Tries direct resolve first; if it fails, tries case-insensitive mapping.
+        Returns the LoRA name that ComfyUI can find, not the full path.
         """
         try:
-            return folder_paths.get_full_path_or_raise("loras", name)
+            # First try to verify the name exists by getting the full path
+            folder_paths.get_full_path_or_raise("loras", name)
+            # If successful, return the name as-is
+            return name
         except Exception:
             # Fallback: case-insensitive search over known lora filenames
             try:
@@ -126,18 +128,11 @@ class HikazePowerLoraLoader:
                             break
                 if match_actual is None:
                     raise FileNotFoundError(f"LoRA not found: {name}")
-                return folder_paths.get_full_path_or_raise("loras", match_actual)
+                return match_actual
             except Exception:
-                # Re-raise original error context
-                return folder_paths.get_full_path_or_raise("loras", name)
+                # Re-raise with original name if all fails
+                raise FileNotFoundError(f"LoRA not found: {name}")
 
-    def _load_lora(self, path: str) -> Any:
-        """Load LoRA state dict with a tiny cache."""
-        obj = self._lora_cache.get(path)
-        if obj is None:
-            obj = comfy.utils.load_torch_file(path, safe_load=True)
-            self._lora_cache[path] = obj
-        return obj
 
     # --- utilities ---
     @staticmethod
@@ -220,6 +215,9 @@ class HikazePowerLoraLoader:
         patched_model = model
         patched_clip = clip
 
+        # Create a LoraLoader instance to use ComfyUI's standard LoRA loading method
+        loader = LoraLoader()
+
         for i in range(int(self.MAX_LORAS)):  # type: ignore[call-overload]
             key_str, enabled, sm, sc = self._parse_slot(i, kwargs)
             if not key_str:
@@ -229,12 +227,15 @@ class HikazePowerLoraLoader:
             if (not enabled) or (sm == 0.0 and sc == 0.0):
                 continue
 
-            # Resolve and apply
-            lora_path = self._resolve_lora_path(key_str)
-            lora_obj = self._load_lora(lora_path)
-            patched_model, patched_clip = comfy.sd.load_lora_for_models(
-                patched_model, patched_clip, lora_obj, sm, sc
-            )
+            # Resolve LoRA name and apply using ComfyUI's standard method
+            lora_name = self._resolve_lora_name(key_str)
+            try:
+                patched_model, patched_clip = loader.load_lora(
+                    patched_model, patched_clip, lora_name, float(sm), float(sc)
+                )
+            except Exception:
+                # Skip on single-row failure to avoid failing the whole node
+                continue
 
         return (patched_model, patched_clip)
 
