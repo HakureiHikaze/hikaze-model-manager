@@ -493,7 +493,16 @@
     const createStrengthControls = (m)=>{
       const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
       const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
-      const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
+      const num = (name, val, onchg)=> h('input', {
+        type:'number', 
+        step:'0.05', 
+        min:'-10', 
+        max:'10', 
+        value: String(val), 
+        style:{width: state.viewMode==='cards'?'80px':'72px', minWidth:'70px'}, 
+        oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); },
+        onclick:(e)=>{ stop(e); }
+      });
       const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.model'));
       const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
       const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.clip'));
@@ -891,7 +900,7 @@
     });
 
     // Search and Scan
-    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); updateAll(); }, 300), 'searchInput');
+    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); resetAndLoad(); }, 300), 'searchInput');
     bind(el.refreshBtn, 'click', async ()=>{
       try{
         if (!el.refreshBtn) return;

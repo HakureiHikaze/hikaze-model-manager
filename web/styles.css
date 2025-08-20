@@ -83,6 +83,12 @@
 .btn:hover{background:#2a2f36;border-color:#3a3f46}
 .btn:disabled{opacity:.6;cursor:not-allowed}
 
+/* LoRA strength controls */
+.lora-strengths{display:flex;align-items:center;flex-wrap:wrap;gap:4px !important}
+.lora-strengths input[type="number"]{border:1px solid #30363d;border-radius:4px;background:#0d1117;color:#c9d1d9;padding:2px 4px;font-size:12px;text-align:center}
+.lora-strengths input[type="number"]:focus{outline:1px solid #1f6feb;outline-offset:1px}
+.lora-strengths .tag{font-size:11px;padding:2px 4px;white-space:nowrap}
+
 
 /* Non-agent edits */
 .detailName{color:#e6edf3 !important;}
