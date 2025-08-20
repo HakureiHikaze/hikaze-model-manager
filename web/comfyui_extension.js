@@ -10,8 +10,133 @@ const HikazeManager = {
     menuButton: null,
     initAttempts: 0,
     maxInitAttempts: 30,
-    pending: new Map(), // requestId -> { node, widget, overlay }
+    pending: new Map(), // requestId -> { node, widget, overlay, mode }
 };
+
+// 工具：规范化 LoRA 键（用于去重与预选匹配）
+function normalizeLoraKey(s){
+    try{
+        return String(s || '')
+            .replace(/\\/g, '/')
+            .trim()
+            .toLowerCase();
+    }catch(_){ return ''; }
+}
+
+function collectLoraGroups(node){
+    const groups = new Map(); // idx -> { idx, on, nameWidget, nameVal, smWidget, scWidget }
+    const list = Array.isArray(node.widgets) ? node.widgets : [];
+    const re = /^lora_(\d+)(?:_(on|strength_model|strength_clip|remove))?$/;
+    for (const w of list){
+        const name = w && (w.name || w.label);
+        if (!name || typeof name !== 'string') continue;
+        const m = name.match(re);
+        if (!m) continue;
+        const idx = parseInt(m[1], 10);
+        if (Number.isNaN(idx)) continue;
+        const sub = m[2] || null;
+        const g = groups.get(idx) || { idx, on: true };
+        if (sub === null){ g.nameWidget = w; g.nameVal = w.value; }
+        else if (sub === 'on'){ g.onWidget = w; g.on = !!w.value; }
+        else if (sub === 'strength_model'){ g.smWidget = w; }
+        else if (sub === 'strength_clip'){ g.scWidget = w; }
+        else if (sub === 'remove'){ g.rmWidget = w; }
+        groups.set(idx, g);
+    }
+    return groups;
+}
+
+function removeGroup(node, idx){
+    try{
+        if (!Array.isArray(node.widgets)) return;
+        const re = new RegExp(`^lora_${idx}(?:_(?:on|strength_model|strength_clip|remove))?$`);
+        node.widgets = node.widgets.filter(w=>{
+            const name = w && (w.name || w.label);
+            return !(name && re.test(String(name)));
+        });
+    }catch(err){ console.warn('[Hikaze] removeGroup failed:', err); }
+}
+
+function clearAllGroups(node){
+    try{
+        if (!Array.isArray(node.widgets)) return;
+        const re = /^lora_\d+(?:_(?:on|strength_model|strength_clip|remove))?$/;
+        node.widgets = node.widgets.filter(w=>{
+            const name = w && (w.name || w.label);
+            return !(name && re.test(String(name)));
+        });
+    }catch(err){ console.warn('[Hikaze] clearAllGroups failed:', err); }
+}
+
+function ensureGroup(node, idx, item){
+    if (!Array.isArray(node.widgets)) node.widgets = [];
+    const groups = collectLoraGroups(node);
+    const g = groups.get(idx) || {};
+    const labelName = `lora_${idx}`;
+    const labelOn = `lora_${idx}_on`;
+    const labelSm = `lora_${idx}_strength_model`;
+    const labelSc = `lora_${idx}_strength_clip`;
+    const labelRm = `lora_${idx}_remove`;
+
+    // 同行布置：名称 + model + CLIP
+    const prevWpr = node.widgets_per_row;
+    node.widgets_per_row = 3;
+    // 模型名
+    if (!g.nameWidget){
+        const w = node.addWidget && node.addWidget('text', labelName, (item && item.label) || (item && item.key) || '', ()=>{}, { serialize: true });
+        if (w){ try{ w.label = labelName; }catch(_){} }
+    } else if (item && (item.label || item.key)){
+        try{ g.nameWidget.value = item.label || item.key; }catch(_){ }
+    }
+    // model
+    if (!g.smWidget){
+        const w = node.addWidget && node.addWidget('number', labelSm, (item && typeof item.sm==='number')? item.sm: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
+        if (w){ try{ w.label = 'model'; }catch(_){} }
+    } else if (item && typeof item.sm === 'number'){
+        try{ g.smWidget.value = item.sm; }catch(_){ }
+        try{ g.smWidget.label = 'model'; }catch(_){ }
+    } else {
+        try{ g.smWidget.label = 'model'; }catch(_){ }
+    }
+    // CLIP
+    if (!g.scWidget){
+        const w = node.addWidget && node.addWidget('number', labelSc, (item && typeof item.sc==='number')? item.sc: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
+        if (w){ try{ w.label = 'CLIP'; }catch(_){} }
+    } else if (item && typeof item.sc === 'number'){
+        try{ g.scWidget.value = item.sc; }catch(_){ }
+        try{ g.scWidget.label = 'CLIP'; }catch(_){ }
+    } else {
+        try{ g.scWidget.label = 'CLIP'; }catch(_){ }
+    }
+    // 恢复默认行设置
+    node.widgets_per_row = prevWpr ?? null;
+
+    // 启用开关（默认 true）
+    if (!g.onWidget){
+        const w = node.addWidget && node.addWidget('checkbox', labelOn, true, ()=>{}, { serialize: true });
+        if (w){ try{ w.label = labelOn; }catch(_){} }
+    }
+    // 移除按钮
+    if (!g.rmWidget){
+        const btn = node.addWidget && node.addWidget('button', labelRm, '移除', () => {
+            removeGroup(node, idx);
+            try { node.setDirtyCanvas(true, true); } catch(_) {}
+            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
+        }, { serialize: false });
+        if (btn) btn.label = labelRm;
+    }
+}
+
+function currentSelectedKeysForPreselect(node){
+    const keys = [];
+    const groups = collectLoraGroups(node);
+    for (const g of groups.values()){
+        const key = normalizeLoraKey(g && g.nameVal);
+        if (key) keys.push(key);
+    }
+    return keys;
+}
 
 // 内联样式 - 避免外部CSS加载问题
 const MODAL_STYLES = `
@@ -120,7 +245,7 @@ async function waitForServer(maxWaitTime = 15000) {
 }
 
 // 创建通用模态窗口
-function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/' } = {}) {
+function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/manager.html' } = {}) {
     loadStyles();
 
     const vw = window.innerWidth; const vh = window.innerHeight;
@@ -223,17 +348,24 @@ function openModelManager() {
             HikazeManager.modalWindow.style.display = 'block';
             return;
         }
-        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/' });
+        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/manager.html' });
     } catch (error) {
         console.error('[Hikaze] Error opening model manager:', error);
         alert('打开模型管理器时发生错误: ' + error.message);
     }
 }
 
-// 打开������选择器（selector 模式）
-function openModelSelector({ kind = 'checkpoint', requestId }) {
-    const qs = new URLSearchParams({ mode: 'selector', kind: kind, requestId: requestId || '' });
-    const overlay = createOverlay({ title: '🧩 选择模型', iframeSrc: `http://127.0.0.1:8789/web/?${qs.toString()}` });
+// 打开模型选择器（selector 模式）
+function openModelSelector({ kind = 'checkpoint', requestId, selected = [] }) {
+    const kindNorm = String(kind || '').toLowerCase();
+    const isLora = kindNorm.startsWith('lora');
+    const base = isLora ? 'http://127.0.0.1:8789/web/selector-lora.html' : 'http://127.0.0.1:8789/web/selector-checkpoint.html';
+    const qs = new URLSearchParams({ requestId: requestId || '' });
+    if (isLora && Array.isArray(selected) && selected.length){
+        const keys = selected.map(normalizeLoraKey).filter(Boolean);
+        if (keys.length){ qs.set('selected', keys.join(',')); }
+    }
+    const overlay = createOverlay({ title: isLora ? '🧪 选择 LoRA' : '🧪 选择模型', iframeSrc: `${base}?${qs.toString()}` });
     return overlay;
 }
 
@@ -285,63 +417,16 @@ function tryMenuIntegration() {
     return false;
 }
 
-// 监听选择结果
-function setupMessageListener(){
-    window.addEventListener('message', (ev)=>{
-        const data = ev && ev.data;
-        if (!data || data.type !== 'hikaze-mm-select') return;
-        const { requestId, payload } = data;
-        const ctx = HikazeManager.pending.get(requestId);
-        if (!ctx) return;
-        try{
-            const { node, wName, wPath, overlay, mode } = ctx;
-            // LoRA 批量回填
-            if (payload && (payload.kind === 'lora' || payload.kind === 'loras') && Array.isArray(payload.items) && node && node.comfyClass === 'HikazePowerLoraLoader'){
-                addLoraRows(node, payload.items);
-                // 刷新画布
-                try { node.setDirtyCanvas(true, true); } catch(_) {}
-                try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
-                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-                return;
-            }
-            const pathVal = payload && payload.value ? String(payload.value) : '';
-            const nameVal = payload && (payload.label || payload.value) ? String(payload.label || payload.value) : '';
-            // 通用单值回填（如 checkpoint）
-            if (wPath){
-                try { wPath.value = pathVal; } catch(_) {}
-                try { if (wPath.inputEl) wPath.inputEl.value = pathVal; } catch(_) {}
-            }
-            if (wName){
-                try { wName.value = nameVal; } catch(_) {}
-                try { if (wName.inputEl) wName.inputEl.value = nameVal; } catch(_) {}
-                try {
-                    if (wName.element && wName.element.tagName && wName.element.value !== undefined) {
-                        wName.element.value = nameVal;
-                    }
-                } catch(_) {}
-            }
-            try { node.setDirtyCanvas(true, true); } catch(_) {}
-            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
-            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
-            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        } finally {
-            HikazeManager.pending.delete(requestId);
-        }
-    });
-}
-
-// 为节点注入“读取”按钮并将 ckpt_name 设为隐藏、model_name 只读显示
+// 为节点注入“读取”按钮并保证 ckpt_name 可编辑
 function enhanceCheckpointSelectorNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazeCheckpointSelector') return;
         if (!Array.isArray(node.widgets)) return;
         const wPath = node.widgets.find(w=> w && (w.name === 'ckpt_name' || w.label === 'ckpt_name'));
-        // 保持原版下拉：不禁用不隐藏，让用户可直接从下拉选择
         if (wPath){
             try { wPath.readonly = false; wPath.disabled = false; wPath.hidden = false; } catch(_) {}
             if (wPath.options) { try { wPath.options.readonly = false; } catch(_) {} }
         }
-        // 添加“读取”按钮：作为补充选择方式
         const btn = node.addWidget && node.addWidget('button', '读取', '读取', () => {
             const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
             const overlay = openModelSelector({ kind: 'checkpoint', requestId });
@@ -354,62 +439,39 @@ function enhanceCheckpointSelectorNode(node){
     }
 }
 
-// 工具：在 Power LoRA Loader 上新增若干行 widgets
-function addLoraRows(node, items){
-    try{
-        if (!node || !Array.isArray(items)) return;
-        const nextIndex = (()=>{
-            let maxI = -1;
-            const re = /^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/;
-            const list = Array.isArray(node.widgets) ? node.widgets : [];
-            for (const w of list){
-                const name = w && (w.name || w.label);
-                if (!name || typeof name !== 'string') continue;
-                const m = name.match(re);
-                if (m){ const i = parseInt(m[1], 10); if (!Number.isNaN(i)) maxI = Math.max(maxI, i); }
-            }
-            return (maxI + 1);
-        })();
-        let i = nextIndex;
-        const addOne = (val, label)=>{
-            const idx = i++;
-            const keyBase = `lora_${idx}`;
-            // on 开关
-            const wOn = node.addWidget && node.addWidget('checkbox', `${keyBase}_on`, true, (v)=>{ /* no-op */ }, { serialize: true });
-            if (wOn) { wOn.label = `${keyBase}_on`; }
-            // 名称文本（loras 相对路径/文件名）
-            const wName = node.addWidget && node.addWidget('text', keyBase, String(val||''), (v)=>{ /* no-op */ }, { serialize: true });
-            // 模型强度
-            const wSm = node.addWidget && node.addWidget('number', `${keyBase}_strength_model`, 1.0, (v)=>{ /* no-op */ }, { serialize: true, min: -4, max: 4, step: 0.05 });
-            // CLIP 强度
-            const wSc = node.addWidget && node.addWidget('number', `${keyBase}_strength_clip`, 1.0, (v)=>{ /* no-op */ }, { serialize: true, min: -4, max: 4, step: 0.05 });
-            // UI 微调
-            try { if (wName) wName.serialize = true; } catch(_) {}
-            try { if (wSm) wSm.serialize = true; } catch(_) {}
-            try { if (wSc) wSc.serialize = true; } catch(_) {}
-        };
-        items.forEach(it=> addOne(it && (it.value || it.label || '')));
-    }catch(err){
-        console.warn('[Hikaze] addLoraRows failed:', err);
-    }
-}
-
-// 增强 LoRA Loader：添加 bypass 与“选择模型”按钮
 function enhancePowerLoraLoaderNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
         if (!Array.isArray(node.widgets)) node.widgets = [];
-        // 如未存在 bypass，则添加
-        const hasBypass = node.widgets.some(w=> w && (w.name === 'bypass' || w.label === 'bypass'));
-        if (!hasBypass){
-            const wBy = node.addWidget && node.addWidget('checkbox', 'bypass', false, (v)=>{ /* 透传 */ }, { serialize: true });
-            if (wBy) wBy.label = '禁用全部LoRA（bypass）';
-        }
-        // 添加“选择模型”按钮（LoRA 多选）
+        // 若存在旧的只读展示，尽量迁移为分组
+        try{
+            const js = node.widgets.find(w=> w && (w.name === 'lora_items_json'));
+            if (js && js.value){
+                try{
+                    const arr = JSON.parse(String(js.value||'[]'));
+                    clearAllGroups(node);
+                    // 移除只读项
+                    node.widgets = node.widgets.filter(w=>{
+                        const n = w && (w.name || w.label) || '';
+                        return !(typeof n === 'string' && (/^lora_item_\d+$/.test(n) || n === 'lora_items_json'));
+                    });
+                    let idx = 0;
+                    for (const it of (Array.isArray(arr)? arr: [])){
+                        const item = { key: normalizeLoraKey(it.key||it.value||''), label: String(it.label||it.value||it.key||''), sm: Number(it.sm)||1.0, sc: Number(it.sc)||1.0 };
+                        ensureGroup(node, idx++, item);
+                    }
+                }catch(_){ /* ignore */ }
+            }
+        }catch(_){ }
+        // 若仍不存在任何分组，创建一行空白
+        const groups = collectLoraGroups(node);
+        if (!groups.size){ ensureGroup(node, 0, { key:'', label:'', sm:1.0, sc:1.0 }); }
+        // 选择入口按钮
         const btn = node.addWidget && node.addWidget('button', '选择模型…', '选择模型…', () => {
             const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-            const overlay = openModelSelector({ kind: 'lora', requestId });
-            HikazeManager.pending.set(requestId, { node, overlay, mode: 'lora-batch' });
+            const selected = currentSelectedKeysForPreselect(node);
+            const overlay = openModelSelector({ kind: 'lora', requestId, selected });
+            HikazeManager.pending.set(requestId, { node, overlay, mode: 'replace' });
         }, { serialize: false });
         if (btn) btn.label = '选择模型…';
         try { node.setDirtyCanvas(true, true); } catch(_) {}
@@ -432,7 +494,7 @@ app.registerExtension({
         setTimeout(() => {
             // 仅保留右上角按钮
             tryMenuIntegration();
-            // 选择结果监听
+            // 选择结果回填监听
             setupMessageListener();
         }, 2000);
 
@@ -444,19 +506,70 @@ app.registerExtension({
     },
 
     async nodeCreated(node){
-        // 增强我们自定义的节点
-        enhanceCheckpointSelectorNode(node);
-        enhancePowerLoraLoaderNode(node);
+        // 增强我们自定义的节点（加保护，避免异常冒泡）
+        try { enhanceCheckpointSelectorNode(node); } catch (err) { console.warn('[Hikaze] nodeCreated checkpoint enhance failed:', err); }
+        try { enhancePowerLoraLoaderNode(node); } catch (err) { console.warn('[Hikaze] nodeCreated lora enhance failed:', err); }
     }
 });
 
-// 全局函数导��
+// 全局函数导出
 window.hikazeOpenManager = openModelManager;
 window.hikazeManager = {
     open: openModelManager,
-    openSelector: (kind, requestId)=> openModelSelector({kind, requestId}),
+    openSelector: (kind, requestId, selected)=> openModelSelector({kind, requestId, selected}),
     isServerStarted: () => HikazeManager.isServerStarted,
     checkServer: checkServerStatus
 };
 
 console.log('[Hikaze] Extension script loaded');
+
+// 选择结果回填监听
+function setupMessageListener(){
+    window.addEventListener('message', (ev)=>{
+        const data = ev && ev.data;
+        if (!data || data.type !== 'hikaze-mm-select') return;
+        const { requestId, payload } = data;
+        const ctx = HikazeManager.pending.get(requestId);
+        if (!ctx) return;
+        try{
+            const { node, wName, wPath, overlay, mode } = ctx;
+            if (payload && (payload.kind === 'lora' || payload.kind === 'loras') && Array.isArray(payload.items) && node && node.comfyClass === 'HikazePowerLoraLoader'){
+                const opMode = (payload.mode === 'append' || mode === 'append') ? 'append' : 'replace';
+                const incoming = (payload.items || []).map(it=>({ key: normalizeLoraKey(it && (it.value || it.label || '')), label: String((it && (it.label || it.value)) || ''), sm: (typeof it.sm==='number'? it.sm: 1.0), sc: (typeof it.sc==='number'? it.sc: 1.0) })).filter(it=>it.key);
+                if (opMode === 'replace') clearAllGroups(node);
+                let idx = 0;
+                if (opMode === 'append'){
+                    const groups = collectLoraGroups(node);
+                    if (groups.size){ idx = Math.max(...Array.from(groups.keys())) + 1; }
+                }
+                for (const it of incoming){ ensureGroup(node, idx++, it); }
+                try { node.setDirtyCanvas(true, true); } catch(_) {}
+                try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+                try { if (node.onResize) node.onResize(node.size); } catch(_) {}
+                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                return;
+            }
+            const pathVal = payload && payload.value ? String(payload.value) : '';
+            const nameVal = payload && (payload.label || payload.value) ? String(payload.label || payload.value) : '';
+            if (wPath){
+                try { wPath.value = pathVal; } catch(_) {}
+                try { if (wPath.inputEl) wPath.inputEl.value = pathVal; } catch(_) {}
+            }
+            if (wName){
+                try { wName.value = nameVal; } catch(_) {}
+                try { if (wName.inputEl) wName.inputEl.value = nameVal; } catch(_) {}
+                try {
+                    if (wName.element && wName.element.tagName && wName.element.value !== undefined) {
+                        wName.element.value = nameVal;
+                    }
+                } catch(_) {}
+            }
+            try { node.setDirtyCanvas(true, true); } catch(_) {}
+            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
+            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        } finally {
+            HikazeManager.pending.delete(requestId);
+        }
+    });
+}

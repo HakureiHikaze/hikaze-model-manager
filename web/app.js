@@ -1,18 +1,54 @@
 'use strict';
 
 (function(){
-  // 仅在 iframe 内运行，避免被 ComfyUI 主页面自动加载
+  // 允许在顶层直接访问 /web 时运行；仅在非本页面的顶层环境下跳过
   try {
     if (typeof window !== 'undefined' && window.top === window) {
-      console.debug('[HikazeMM] app.js: detected top window, skip initialization');
-      return;
+      const p = (typeof location !== 'undefined' && location.pathname ? location.pathname.toLowerCase() : '');
+      const isOurPage = (p === '/web' || p.startsWith('/web/'));
+      if (!isOurPage) {
+        console.debug('[HikazeMM] app.js: top window but not /web, skip initialization');
+        return;
+      }
     }
   } catch(_) {}
 
   const urlParams = new URLSearchParams(location.search || '');
-  const selectorMode = (urlParams.get('mode') === 'selector');
-  const selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint'
+  // 基于查询参数与路径双通道识别选择器模式
+  let selectorMode = (urlParams.get('mode') === 'selector');
+  let selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint' | 'lora'
+  const pathName = (typeof location !== 'undefined' && location.pathname) ? location.pathname.toLowerCase() : '';
+  if (!selectorMode) {
+    if (pathName.includes('selector-lora')) { selectorMode = true; selectorKind = selectorKind || 'lora'; }
+    else if (pathName.includes('selector-checkpoint')) { selectorMode = true; selectorKind = selectorKind || 'checkpoint'; }
+  }
   const selectorRequestId = urlParams.get('requestId') || null;
+  // 新增：规范化类型名（复用后端别名规则的子集）
+  function normalizeTypeName(n){
+    const m = String(n||'').trim().toLowerCase();
+    const alias = { checkpoints: 'checkpoint', loras: 'lora', embeddings: 'embedding', vaes: 'vae' };
+    return alias[m] || m;
+  }
+  // LoRA 预选键辅助
+  function normalizeKey(s){
+    try { return String(s||'').replace(/\\/g,'/').trim().toLowerCase(); } catch(_){ return ''; }
+  }
+  function basename(p){
+    try{ const parts = String(p||'').split(/[\\\/]/); return parts[parts.length-1] || ''; }catch(_){ return String(p||''); }
+  }
+  function identityForModel(m){
+    const v = m && (m.lora_name || basename(m.path) || m.name);
+    return normalizeKey(v);
+  }
+  // 新增：预选 keys（来自 URL selected 参数，逗号分隔）
+  const selectorPreselectedRaw = urlParams.get('selected') || '';
+  const preselectedKeys = new Set(
+    (selectorPreselectedRaw || '')
+      .split(',')
+      .map(s=>decodeURIComponent(s).trim())
+      .filter(Boolean)
+      .map(s=>s.toLowerCase())
+  );
 
   const state = {
     types: [],
@@ -30,7 +66,9 @@
       on: selectorMode,
       kind: selectorKind,
       requestId: selectorRequestId,
-      selectedIds: new Set(), // 新增：多选已选 id 集
+      selectedIds: new Set(), // 多选已选 id 集
+      preKeys: preselectedKeys, // 新增：预选 identity keys
+      strengths: new Map(), // 新增：id -> { sm, sc }
     }
   };
 
@@ -183,12 +221,10 @@
     state.currentType = t ? t.name : null;
     // 选择器模式：优先切换到指定 kind（含别名）
     if (state.selector.on && state.selector.kind) {
-      const want = String(state.selector.kind).toLowerCase();
-      const alias = { checkpoint: 'checkpoint', checkpoints: 'checkpoint', lora: 'lora', loras: 'lora' };
-      const target = alias[want] || want;
-      // 在 /types 返回中匹配目标类型（允许 singular/plural 差异）
-      const found = rows.find(x=> String(x.name||'').toLowerCase() === target || String(x.name||'').toLowerCase() === (target+'s'));
-      if (found) state.currentType = found.name;
+      const want = normalizeTypeName(state.selector.kind);
+      const found = rows.find(x=> normalizeTypeName(x && x.name) === want || String(x && x.name).toLowerCase() === (want+'s'));
+      // 修改：若未在 /types 中找到，也强制为 want，避免回落到 checkpoint
+      state.currentType = found ? found.name : want;
     }
     renderTypeTabs();
   }
@@ -198,7 +234,7 @@
     el.typeTabs.innerHTML = '';
     state.types.forEach(t=>{
       const btn = h('button', {
-        class: 'tab' + (state.currentType===t.name?' active':''),
+        class: 'tab' + (state.currentType===t.name?' active':'') ,
         onclick: ()=>{ state.currentType = t.name; state.selectedTags.clear(); renderTypeTabs(); updateAll(); }
       }, `${t.name} (${t.count})`);
       el.typeTabs.appendChild(btn);
@@ -207,17 +243,20 @@
 
   // Tags facets & dropdown
   async function loadFacets(){
-    if (!state.currentType) { el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
+    // 选择器模式下强制使用 kind 作为过滤类型（当 currentType 缺失时）
+    const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
+    const effectiveType = state.currentType || forcedType;
+    if (!effectiveType) { if (el.tagDropdown) el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
     const selected = Array.from(state.selectedTags).join(',');
     const url = new URL(location.origin + '/tags/facets');
-    if (state.currentType) url.searchParams.set('type', state.currentType);
+    if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (selected) url.searchParams.set('selected', selected);
     url.searchParams.set('mode', state.tagsMode);
     const facets = await api(url.pathname + '?' + url.searchParams.toString());
     try {
       const byTypeUrl = new URL(location.origin + '/tags/by-type');
-      byTypeUrl.searchParams.set('type', state.currentType);
+      byTypeUrl.searchParams.set('type', effectiveType);
       const allTags = await api(byTypeUrl.pathname + '?' + byTypeUrl.searchParams.toString());
       if (Array.isArray(allTags)) {
         state.tagCandidates = allTags
@@ -255,7 +294,10 @@
   // Models
   async function loadModels(){
     const url = new URL(location.origin + '/models');
-    if (state.currentType) url.searchParams.set('type', state.currentType);
+    // 选择器模式优先用 /types 命中���真实类型，其次才使用 URL kind 规范化，保证仅列出该大类
+    const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
+    const effectiveType = state.currentType || forcedType;
+    if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (state.selectedTags.size>0) url.searchParams.append('tags', Array.from(state.selectedTags).join(','));
     url.searchParams.set('tags_mode', state.tagsMode);
@@ -263,6 +305,16 @@
     const data = await api(url.pathname + '?' + url.searchParams.toString());
     state.models = data.items || [];
     state.total = data.total || 0;
+    // 新增：将预选 keys 映射到当前批次 items 的 id 集合，并初始化默认强度
+    if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
+      for (const m of state.models){
+        const key = identityForModel(m);
+        if (key && state.selector.preKeys.has(key)){
+          state.selector.selectedIds.add(m.id);
+          if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
+        }
+      }
+    }
     if (state.selectedModel) {
       const found = state.models.find(it=> it && it.id === state.selectedModel.id);
       if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
@@ -331,20 +383,59 @@
       el.modelsContainer.appendChild(h('div', {class:'empty'}, '无结果'));
       return;
     }
+    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
+    const stop = (e)=>{ try{ e.stopPropagation(); }catch(_){} };
+    const includeModel = (m)=>{ if (!state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.add(m.id); if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 }); } };
+    const removeModel = (m)=>{ if (state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.delete(m.id); state.selector.strengths.delete(m.id); } };
+    const createStrengthControls = (m)=>{
+      const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
+      const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
+      const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
+      const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'model');
+      const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
+      const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'CLIP');
+      const sc = num('sc', s.sc, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sc=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
+      wrap.append(smLab, sm, scLab, sc);
+      return wrap;
+    };
     state.models.forEach(m=>{
       const tags = (m.tags||[]).filter(t=>t!==m.type);
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
-      const multiPick = state.selector.on && (String(state.selector.kind||'').toLowerCase() === 'lora' || String(state.selector.kind||'').toLowerCase() === 'loras');
-      const picked = multiPick && state.selector.selectedIds.has(m.id);
-      const pickBox = multiPick ? h('input', {type:'checkbox', checked: picked? '': null, onclick:(e)=>{ e.stopPropagation(); if (state.selector.selectedIds.has(m.id)) state.selector.selectedIds.delete(m.id); else state.selector.selectedIds.add(m.id); updateActionsState(); if (state.viewMode==='cards'){ /* 触发重绘选中样式 */ renderModels(); } else { e.currentTarget.closest('.row')?.classList.toggle('picked', state.selector.selectedIds.has(m.id)); } }}) : null;
+      const picked = isLoraSelector && state.selector.selectedIds.has(m.id);
       if (state.viewMode === 'cards'){
-        const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
+        const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>{
+          if (isLoraSelector){
+            // 点击卡片：纳入并聚焦（不取消）
+            includeModel(m);
+            state.selectedModel = JSON.parse(JSON.stringify(m));
+            state.originalDetail = JSON.parse(JSON.stringify(m));
+            updateActionsState();
+            renderDetail();
+            renderModels();
+          } else {
+            selectModel(m);
+          }
+        }});
         const badge = h('span', {class:'badge'}, m.type);
-        const top = h('div', {class:'card-top'}, [badge]);
-        if (pickBox){ top.appendChild(h('span', {style:{marginLeft:'auto'}}, pickBox)); }
+        const topChildren = [badge];
+        // 复选框：仅用于取消（也支持重新勾选纳入）
+        if (isLoraSelector){
+          const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
+            stop(e);
+            const on = e.currentTarget && e.currentTarget.checked;
+            if (on) includeModel(m); else removeModel(m);
+            updateActionsState();
+            // 如果刚取消且是当前蓝色高亮，可保持右侧信息不变，符合“最近选择”逻辑
+            renderModels();
+          }});
+          topChildren.push(h('span', {style:{marginLeft:'auto'}}, chk));
+        }
+        const top = h('div', {class:'card-top'}, topChildren);
         const bg = h('div', {class:'bg'});
         const name = h('div', {class:'name'}, m.name || m.path);
-        const tagRow = h('div', {class:'tags'}, tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)));
+        const tagRowChildren = tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t));
+        if (isLoraSelector && picked) tagRowChildren.push(createStrengthControls(m));
+        const tagRow = h('div', {class:'tags', style:{display:'flex', gap:'6px', flexWrap:'wrap'}}, tagRowChildren);
         card.append(top, bg, name, tagRow);
         if (m.images && m.images.length){
           card.style.backgroundImage = `url(${m.images[0]})`;
@@ -353,12 +444,39 @@
         }
         el.modelsContainer.appendChild(card);
       } else {
-        const row = h('div', {class:'row' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
-        if (pickBox) row.appendChild(h('span', {class:'row-pick'}, pickBox));
+        const row = h('div', {class:'row' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>{
+          if (isLoraSelector){
+            includeModel(m);
+            state.selectedModel = JSON.parse(JSON.stringify(m));
+            state.originalDetail = JSON.parse(JSON.stringify(m));
+            updateActionsState();
+            renderDetail();
+            renderModels();
+          } else {
+            selectModel(m);
+          }
+        }});
+        // 复选框列
+        if (isLoraSelector){
+          const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
+            stop(e);
+            const on = e.currentTarget && e.currentTarget.checked;
+            if (on) includeModel(m); else removeModel(m);
+            updateActionsState();
+            row.classList.toggle('picked', !!on);
+            // 列表模式避免整页重绘，仅更新当前行的强度区域
+            const old = row.querySelector('.lora-strengths'); if (old) old.remove();
+            if (on){ row.appendChild(createStrengthControls(m)); }
+          }});
+          row.appendChild(h('span', {class:'row-pick'}, chk));
+        }
         row.append(
           h('span', {class:'row-name'}, m.name || m.path),
           h('span', {class:'row-tags'}, tags.map(t=>h('span', {class:'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)))
         );
+        if (isLoraSelector && picked){
+          row.appendChild(createStrengthControls(m));
+        }
         row.addEventListener('mouseenter', (e)=>{ trackMouse(e); schedulePreview(m); });
         row.addEventListener('mousemove', (e)=>{ trackMouse(e); });
         row.addEventListener('mouseleave', ()=>{ removePreview(); });
@@ -534,7 +652,7 @@
         const kind = String(state.selector.kind||'').toLowerCase();
         let can = false;
         if (kind === 'checkpoint' || kind === 'checkpoints') {
-          can = !!(state.selectedModel && state.selectedModel.ckpt_name);
+          can = !!(state.selectedModel && (state.selectedModel.ckpt_name || state.selectedModel.path));
         } else if (kind === 'lora' || kind === 'loras') {
           can = state.selector.selectedIds && state.selector.selectedIds.size > 0;
         } else {
@@ -604,19 +722,22 @@
     await Promise.all([loadFacets(), loadModels()]);
   }
 
-  function sendSelection(){
+  function sendSelection(ev){
     if (!state.selector.on) return;
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
+    // Shift 按住表示追加；默认替换
+    const mode = (ev && ev.shiftKey) ? 'append' : 'replace';
     if (kind === 'lora' || kind === 'loras'){
       const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
       if (!picked.length) { alert('请至少选择一个 LoRA'); return; }
       const items = picked.map(m=>{
-        const base = (m.path ? (m.path.split(/[\/\\]/).pop()||'') : (m.name||''));
-        const value = base; // 仅传文件名，避免绝对路径
+        const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
+        const value = (m && m.lora_name) ? m.lora_name : base; // 优先相对名
         const label = (m && (m.name || base)) || String(value);
-        return { value, label };
+        const st = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
+        return { value, label, sm: Number(st.sm)||1.0, sc: Number(st.sc)||1.0 };
       });
-      const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items } };
+      const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items, mode } };
       try { window.parent.postMessage(msg, '*'); } catch(_) {}
       return;
     }
@@ -625,12 +746,12 @@
     if (!m) { alert('未选择模型'); return; }
     let value = null;
     if (kind === 'checkpoint' || kind === 'checkpoints') {
-      value = m.ckpt_name || null;
+      value = m.ckpt_name || m.path || m.name || null;
     } else {
       value = m.path || m.name || null;
     }
     if (!value) { alert('无有效选择'); return; }
-    const label = (m && (m.name || (m.path ? m.path.split(/[\/\\]/).pop() : ''))) || String(value);
+    const label = (m && (m.name || (m.path ? m.path.split(/[\\\/]/).pop() : ''))) || String(value);
     const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind, value, label } };
     try { window.parent.postMessage(msg, '*'); } catch(_) {}
   }
@@ -646,11 +767,11 @@
     }
     // 选择器模式下：绑定回车快捷确认
     if (state.selector.on && el.confirmBtn){
-      bind(el.confirmBtn, 'click', ()=> sendSelection());
+      bind(el.confirmBtn, 'click', (e)=> sendSelection(e));
       document.addEventListener('keydown', (e)=>{
         if (e.key === 'Enter'){
           e.preventDefault();
-          sendSelection();
+          sendSelection(e);
         }
       });
     }

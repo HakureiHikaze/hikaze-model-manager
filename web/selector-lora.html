@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>选择 LoRA 模型</title>
+  <link rel="stylesheet" href="/web/styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <nav class="type-tabs" id="typeTabs"></nav>
+      <div class="search-row">
+        <input id="searchInput" type="text" placeholder="搜索模型名/路径…" />
+        <div class="tag-filter">
+          <button id="tagDropdownBtn" class="btn">标签筛选 ▾</button>
+          <div id="tagDropdown" class="dropdown hidden"></div>
+        </div>
+        <div class="mode-toggle">
+          <label><input type="radio" name="tagsMode" value="all" checked> 全包含</label>
+          <label><input type="radio" name="tagsMode" value="any"> 任一包含</label>
+        </div>
+        <button id="refreshBtn" class="btn">刷新数据库</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="model-list">
+        <div class="view-switch">
+          <button id="cardViewBtn" class="active">卡片</button>
+          <button id="listViewBtn">列表</button>
+        </div>
+        <div id="modelsContainer" class="cards"></div>
+      </section>
+
+      <aside class="model-detail" id="modelDetail">
+        <div class="preview" id="detailImage"></div>
+        <h3 id="detailName">未选择</h3>
+        <div class="fields" id="detailFields"></div>
+        <div class="actions">
+          <button id="revertBtn" style="display:none">放弃编辑</button>
+          <button id="saveBtn" style="display:none">保存</button>
+          <button id="confirmBtn">确认</button>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/web/app.js"></script>
+</body>
+</html>
