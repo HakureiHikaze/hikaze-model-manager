@@ -1,11 +1,15 @@
 'use strict';
 
 (function(){
-  // 仅在 iframe 内运行，避免被 ComfyUI 主页面自动加载
+  // 允许在顶层直接访问 /web 时运行；仅在非本页面的顶层环境下跳过
   try {
     if (typeof window !== 'undefined' && window.top === window) {
-      console.debug('[HikazeMM] app.js: detected top window, skip initialization');
-      return;
+      const p = (typeof location !== 'undefined' && location.pathname ? location.pathname.toLowerCase() : '');
+      const isOurPage = (p === '/web' || p.startsWith('/web/'));
+      if (!isOurPage) {
+        console.debug('[HikazeMM] app.js: top window but not /web, skip initialization');
+        return;
+      }
     }
   } catch(_) {}
 
@@ -237,7 +241,7 @@
 
   // Tags facets & dropdown
   async function loadFacets(){
-    // 选择器模式下强制使用 kind 作���过滤类型（当 currentType 缺失时）
+    // 选择器模式下强制使用 kind 作为过滤类型（当 currentType 缺失时）
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
     const effectiveType = state.currentType || forcedType;
     if (!effectiveType) { if (el.tagDropdown) el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
@@ -288,7 +292,7 @@
   // Models
   async function loadModels(){
     const url = new URL(location.origin + '/models');
-    // 选择器模式优先用 /types 命中的真实类型，其次才使用 URL kind 规范化，保证仅列出该大类
+    // 选择器模式优先用 /types 命中���真实类型，其次才使用 URL kind 规范化，保证仅列出该大类
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
     const effectiveType = state.currentType || forcedType;
     if (effectiveType) url.searchParams.set('type', effectiveType);
@@ -315,7 +319,7 @@
     renderModels();
   }
 
-  // 悬浮��览
+  // 悬浮预览
   const hoverPreview = { el: null, timer: null, pos: {x: 0, y: 0} };
   function createHoverEl(){
     if (hoverPreview.el) return hoverPreview.el;
