@@ -10,14 +10,31 @@
   } catch(_) {}
 
   const urlParams = new URLSearchParams(location.search || '');
-  const selectorMode = (urlParams.get('mode') === 'selector');
-  const selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint'
+  // 基于查询参数与路径双通道识别选择器模式
+  let selectorMode = (urlParams.get('mode') === 'selector');
+  let selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint' | 'lora'
+  const pathName = (typeof location !== 'undefined' && location.pathname) ? location.pathname.toLowerCase() : '';
+  if (!selectorMode) {
+    if (pathName.includes('selector-lora')) { selectorMode = true; selectorKind = selectorKind || 'lora'; }
+    else if (pathName.includes('selector-checkpoint')) { selectorMode = true; selectorKind = selectorKind || 'checkpoint'; }
+  }
   const selectorRequestId = urlParams.get('requestId') || null;
   // 新增：规范化类型名（复用后端别名规则的子集）
   function normalizeTypeName(n){
     const m = String(n||'').trim().toLowerCase();
     const alias = { checkpoints: 'checkpoint', loras: 'lora', embeddings: 'embedding', vaes: 'vae' };
     return alias[m] || m;
+  }
+  // LoRA 预选键辅助
+  function normalizeKey(s){
+    try { return String(s||'').replace(/\\/g,'/').trim().toLowerCase(); } catch(_){ return ''; }
+  }
+  function basename(p){
+    try{ const parts = String(p||'').split(/[\\\/]/); return parts[parts.length-1] || ''; }catch(_){ return String(p||''); }
+  }
+  function identityForModel(m){
+    const v = m && (m.lora_name || basename(m.path) || m.name);
+    return normalizeKey(v);
   }
   // 新增：预选 keys（来自 URL selected 参数，逗号分隔）
   const selectorPreselectedRaw = urlParams.get('selected') || '';
@@ -211,7 +228,7 @@
     el.typeTabs.innerHTML = '';
     state.types.forEach(t=>{
       const btn = h('button', {
-        class: 'tab' + (state.currentType===t.name?' active':''),
+        class: 'tab' + (state.currentType===t.name?' active':'') ,
         onclick: ()=>{ state.currentType = t.name; state.selectedTags.clear(); renderTypeTabs(); updateAll(); }
       }, `${t.name} (${t.count})`);
       el.typeTabs.appendChild(btn);
@@ -220,7 +237,7 @@
 
   // Tags facets & dropdown
   async function loadFacets(){
-    // 选择器模式下强制使用 kind 作为过滤类型（当 currentType 缺失时）
+    // 选择器模式下强制使用 kind 作���过滤类型（当 currentType 缺失时）
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
     const effectiveType = state.currentType || forcedType;
     if (!effectiveType) { if (el.tagDropdown) el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
@@ -298,7 +315,7 @@
     renderModels();
   }
 
-  // 悬浮预览
+  // 悬浮��览
   const hoverPreview = { el: null, timer: null, pos: {x: 0, y: 0} };
   function createHoverEl(){
     if (hoverPreview.el) return hoverPreview.el;
@@ -562,7 +579,7 @@
         const kind = String(state.selector.kind||'').toLowerCase();
         let can = false;
         if (kind === 'checkpoint' || kind === 'checkpoints') {
-          can = !!(state.selectedModel && state.selectedModel.ckpt_name);
+          can = !!(state.selectedModel && (state.selectedModel.ckpt_name || state.selectedModel.path));
         } else if (kind === 'lora' || kind === 'loras') {
           can = state.selector.selectedIds && state.selector.selectedIds.size > 0;
         } else {
@@ -641,7 +658,7 @@
       const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
       if (!picked.length) { alert('请至少选择一个 LoRA'); return; }
       const items = picked.map(m=>{
-        const base = (m.path ? (m.path.split(/[\\/]/).pop()||'') : (m.name||''));
+        const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
         const value = (m && m.lora_name) ? m.lora_name : base; // 优先相对名
         const label = (m && (m.name || base)) || String(value);
         return { value, label };
@@ -655,12 +672,12 @@
     if (!m) { alert('未选择模型'); return; }
     let value = null;
     if (kind === 'checkpoint' || kind === 'checkpoints') {
-      value = m.ckpt_name || null;
+      value = m.ckpt_name || m.path || m.name || null;
     } else {
       value = m.path || m.name || null;
     }
     if (!value) { alert('无有效选择'); return; }
-    const label = (m && (m.name || (m.path ? m.path.split(/[\\/]/).pop() : ''))) || String(value);
+    const label = (m && (m.name || (m.path ? m.path.split(/[\\\/]/).pop() : ''))) || String(value);
     const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind, value, label } };
     try { window.parent.postMessage(msg, '*'); } catch(_) {}
   }

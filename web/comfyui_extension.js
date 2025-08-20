@@ -193,7 +193,7 @@ async function waitForServer(maxWaitTime = 15000) {
 }
 
 // 创建通用模态窗口
-function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/' } = {}) {
+function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/manager.html' } = {}) {
     loadStyles();
 
     const vw = window.innerWidth; const vh = window.innerHeight;
@@ -296,7 +296,7 @@ function openModelManager() {
             HikazeManager.modalWindow.style.display = 'block';
             return;
         }
-        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/' });
+        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/manager.html' });
     } catch (error) {
         console.error('[Hikaze] Error opening model manager:', error);
         alert('打开模型管理器时发生错误: ' + error.message);
@@ -305,13 +305,15 @@ function openModelManager() {
 
 // 打开模型选择器（selector 模式）
 function openModelSelector({ kind = 'checkpoint', requestId, selected = [] }) {
-    const qs = new URLSearchParams({ mode: 'selector', kind: kind, requestId: requestId || '' });
-    // 新增：选中集合传入（用于预选）
-    if (Array.isArray(selected) && selected.length){
+    const kindNorm = String(kind || '').toLowerCase();
+    const isLora = kindNorm.startsWith('lora');
+    const base = isLora ? 'http://127.0.0.1:8789/web/selector-lora.html' : 'http://127.0.0.1:8789/web/selector-checkpoint.html';
+    const qs = new URLSearchParams({ requestId: requestId || '' });
+    if (isLora && Array.isArray(selected) && selected.length){
         const keys = selected.map(normalizeLoraKey).filter(Boolean);
         if (keys.length){ qs.set('selected', keys.join(',')); }
     }
-    const overlay = createOverlay({ title: kind && kind.toLowerCase().startsWith('lora') ? '🧪 选择 LoRA' : '🧪 选择模型', iframeSrc: `http://127.0.0.1:8789/web/?${qs.toString()}` });
+    const overlay = createOverlay({ title: isLora ? '🧪 选择 LoRA' : '🧪 选择模型', iframeSrc: `${base}?${qs.toString()}` });
     return overlay;
 }
 
@@ -565,7 +567,7 @@ app.registerExtension({
         setTimeout(() => {
             // 仅保留右上角按钮
             tryMenuIntegration();
-            // 选择结果监听
+            // 选择结果��听
             setupMessageListener();
         }, 2000);
 
