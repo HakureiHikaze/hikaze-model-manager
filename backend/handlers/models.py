@@ -141,9 +141,9 @@ def get_params(handler: BaseHTTPRequestHandler, mid: int) -> None:
     params = {}
     if isinstance(extra, dict):
         if "params" in extra and isinstance(extra["params"], dict):
-            params.update(extra["params"])  # 优先用户扩展
+            params.update(extra["params"])  # prefer user-extended params
         if "prompts" in extra and isinstance(extra["prompts"], dict):
-            params.update(extra["prompts"])  # 包含 prompt/negative
+            params.update(extra["prompts"])  # include prompt/negative
     if isinstance(meta, dict) and "params" in meta and isinstance(meta["params"], dict):
         for k, v in meta["params"].items():
             params.setdefault(k, v)
@@ -204,7 +204,7 @@ def update_extra(handler: BaseHTTPRequestHandler, mid: int, data: dict) -> None:
         current = {}
     current.update(data)
     with db.get_conn():
-        db.get_conn().execute("UPDATE models SET extra_json=? WHERE id=?", (json.dumps(current, ensure_ascii=False), mid))
+        db.get_conn().execute("UPDATE models SET extra_json=? WHERE id= ?", (json.dumps(current, ensure_ascii=False), mid))
     handler._set_headers(200)  # type: ignore[attr-defined]
     handler.wfile.write(json_dumps_bytes(current))
 
@@ -255,7 +255,7 @@ def upload_image(handler: BaseHTTPRequestHandler, mid: int) -> None:
         else:
             current["images"] = [image_url]
         with db.get_conn():
-            db.get_conn().execute("UPDATE models SET extra_json=? WHERE id=?", (json.dumps(current, ensure_ascii=False), mid))
+            db.get_conn().execute("UPDATE models SET extra_json=? WHERE id= ?", (json.dumps(current, ensure_ascii=False), mid))
     except Exception:
         handler._set_headers(200)  # type: ignore[attr-defined]
         handler.wfile.write(json_dumps_bytes({"image_url": image_url, "file": out_name, "note": "db_update_failed"}))
@@ -274,4 +274,3 @@ def delete_model(handler: BaseHTTPRequestHandler, mid: int) -> None:
         db.get_conn().execute("DELETE FROM models WHERE id= ?", (mid,))
     handler._set_headers(200)  # type: ignore[attr-defined]
     handler.wfile.write(json_dumps_bytes({"deleted": True, "note": "Model record removed from database, file unchanged"}))
-

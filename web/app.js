@@ -1,7 +1,7 @@
 'use strict';
 
 (function(){
-  // 允许在顶层直接访问 /web 时运行；仅在非本页面的顶层环境下跳过
+  // Allow running when accessed directly under /web; skip initialization if top window isn't our page
   try {
     if (typeof window !== 'undefined' && window.top === window) {
       const p = (typeof location !== 'undefined' && location.pathname ? location.pathname.toLowerCase() : '');
@@ -13,8 +13,50 @@
     }
   } catch(_) {}
 
+  // i18n loader
+  const I18N = {
+    dict: {},
+    lang: 'zh-CN',
+    ready: false,
+    async init(){
+      try{
+        const urlParams = new URLSearchParams(location.search||'');
+        let lang = urlParams.get('lang') || (navigator.language || navigator.userLanguage || 'zh-CN');
+        // Normalize like zh, zh-CN, en-US
+        lang = String(lang).replace('_','-');
+        if (lang.toLowerCase().startsWith('zh')) lang = 'zh-CN';
+        this.lang = lang;
+        const res = await fetch(`/web/i18n/${this.lang}.json`);
+        if (res.ok){ this.dict = await res.json(); this.ready = true; }
+      }catch(err){ console.warn('[HikazeMM] i18n load failed, use keys as text', err); this.dict = {}; this.ready = false; }
+    },
+    t(key){ return (this.dict && Object.prototype.hasOwnProperty.call(this.dict, key)) ? this.dict[key] : key; },
+    apply(root){
+      const r = root || document;
+      try{
+        // Elements with data-i18n => textContent
+        r.querySelectorAll('[data-i18n]').forEach(el=>{
+          const k = el.getAttribute('data-i18n');
+          if (k) el.textContent = I18N.t(k);
+        });
+        // Attributes mapping: data-i18n-attr="placeholder:key,title:key2"
+        r.querySelectorAll('[data-i18n-attr]').forEach(el=>{
+          const spec = el.getAttribute('data-i18n-attr')||'';
+          spec.split(',').forEach(pair=>{
+            const [attr, k] = pair.split(':').map(s=>s && s.trim());
+            if (attr && k){ el.setAttribute(attr, I18N.t(k)); }
+          });
+        });
+        // <title data-i18n="...">
+        const ti = r.querySelector('title[data-i18n]');
+        if (ti){ const k = ti.getAttribute('data-i18n'); if (k) ti.textContent = I18N.t(k); }
+      }catch(err){ console.warn('[HikazeMM] i18n apply failed', err); }
+    }
+  };
+  const t = (k)=> I18N.t(k);
+
   const urlParams = new URLSearchParams(location.search || '');
-  // 基于查询参数与路径双通道识别选择器模式
+  // Determine selector mode via both query params and path
   let selectorMode = (urlParams.get('mode') === 'selector');
   let selectorKind = urlParams.get('kind') || null; // e.g., 'checkpoint' | 'lora'
   const pathName = (typeof location !== 'undefined' && location.pathname) ? location.pathname.toLowerCase() : '';
@@ -23,13 +65,13 @@
     else if (pathName.includes('selector-checkpoint')) { selectorMode = true; selectorKind = selectorKind || 'checkpoint'; }
   }
   const selectorRequestId = urlParams.get('requestId') || null;
-  // 新增：规范化类型名（复用后端别名规则的子集）
+  // Added: normalize type names (subset of backend alias rules)
   function normalizeTypeName(n){
     const m = String(n||'').trim().toLowerCase();
     const alias = { checkpoints: 'checkpoint', loras: 'lora', embeddings: 'embedding', vaes: 'vae' };
     return alias[m] || m;
   }
-  // LoRA 预选键辅助
+  // Helper for LoRA preselect key
   function normalizeKey(s){
     try { return String(s||'').replace(/\\/g,'/').trim().toLowerCase(); } catch(_){ return ''; }
   }
@@ -40,7 +82,7 @@
     const v = m && (m.lora_name || basename(m.path) || m.name);
     return normalizeKey(v);
   }
-  // 新增：预选 keys（来自 URL selected 参数，逗号分隔）
+  // Added: preselected keys (from URL 'selected' param, comma-separated)
   const selectorPreselectedRaw = urlParams.get('selected') || '';
   const preselectedKeys = new Set(
     (selectorPreselectedRaw || '')
@@ -55,20 +97,19 @@
     currentType: null,
     q: '',
     selectedTags: new Set(),
-    tagsMode: 'all',
     viewMode: 'cards',
     models: [],
     total: 0,
     selectedModel: null,
     originalDetail: null,
-    tagCandidates: [], // 可用标签候选（按类型）
+    tagCandidates: [], // available tag candidates (by type)
     selector: {
       on: selectorMode,
       kind: selectorKind,
       requestId: selectorRequestId,
-      selectedIds: new Set(), // 多选已选 id 集
-      preKeys: preselectedKeys, // 新增：预选 identity keys
-      strengths: new Map(), // 新增：id -> { sm, sc }
+      selectedIds: new Set(), // selected id set for multi-select
+      preKeys: preselectedKeys, // preselected identity keys
+      strengths: new Map(), // id -> { sm, sc }
     }
   };
 
@@ -88,9 +129,12 @@
     saveBtn: document.getElementById('saveBtn'),
     confirmBtn: document.getElementById('confirmBtn'),
     refreshBtn: document.getElementById('refreshBtn'),
+    // toolbar buttons: settings/close
+    settingsBtn: document.getElementById('settingsBtn'),
+    closeBtn: document.getElementById('closeBtn'),
   };
 
-  // 新增：安全绑定与日志
+  // Added: safe binding and logging
   function bind(target, event, handler, name){
     if (!target){
       console.warn('[HikazeMM] Missing element for binding', name || event);
@@ -132,7 +176,7 @@
   function formatSize(bytes){
     const n = Number(bytes);
     if (!isFinite(n) || n < 0) return '—';
-    const units = ['B','KB','MB','GB','TB'];
+    const units = [t('mm.units.B'), t('mm.units.KB'), t('mm.units.MB'), t('mm.units.GB'), t('mm.units.TB')];
     let v = n, u = 0; while (v >= 1024 && u < units.length-1){ v/=1024; u++; }
     return (u===0? v: v.toFixed(1)) + ' ' + units[u];
   }
@@ -154,7 +198,7 @@
     return r.json();
   }
 
-  // SHA 行与相关辅助
+  // SHA row and helpers
   function getNoAskHash(){
     try { return localStorage.getItem(NOASK_HASH_KEY) === '1'; } catch(_) { return false; }
   }
@@ -167,24 +211,24 @@
   function createShaRow(m){
     const current = m.hash_hex || '';
     const row = h('label', {class:'field'});
-    const lab = h('span', {class:'label'}, 'SHA256');
+    const lab = h('span', {class:'label'}, t('mm.sha.label'));
     const input = h('input', {value: current || '—', disabled: ''});
-    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, current ? '重算' : '计算');
+    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, current ? t('mm.sha.recompute') : t('mm.sha.compute'));
 
     btn.addEventListener('click', async ()=>{
       try{
         if (!getNoAskHash()){
-          if (!confirm('将计算该文件的 SHA256，可能较慢，是否继续？')) return;
-          if (confirm('是否不再询问？')) setNoAskHash(true);
+          if (!confirm(t('mm.sha.confirmCompute'))) return;
+          if (confirm(t('mm.confirm.noAsk'))) setNoAskHash(true);
         }
-        btn.disabled = true; btn.textContent = '计算中…';
+        btn.disabled = true; btn.textContent = t('mm.common.computing');
         await apiJSON('POST', '/models/refresh', {id: m.id, compute_hash: true});
         const fresh = await fetchModelById(m.id);
         m.hash_hex = fresh.hash_hex;
         input.value = m.hash_hex || '—';
-        btn.textContent = m.hash_hex ? '重算' : '计算';
+        btn.textContent = m.hash_hex ? t('mm.sha.recompute') : t('mm.sha.compute');
       }catch(err){
-        alert('计算失败: ' + (err && err.message ? err.message : err));
+        alert(t('mm.sha.computeFail') + (err && err.message ? err.message : err));
       }finally{
         btn.disabled = false;
       }
@@ -196,10 +240,10 @@
 
   function createCommunityLinkRow(m){
     const wrap = h('label', {class:'field'});
-    const lab = h('span', {class:'label'}, '社区链接');
+    const lab = h('span', {class:'label'}, t('mm.community.label'));
     const val = (m.extra && typeof m.extra.community_links === 'string') ? m.extra.community_links : '';
-    const input = h('input', {value: val, placeholder:'输入链接（Civitai/HF 等）', oninput:(e)=>{ m.extra=m.extra||{}; m.extra.community_links = e.target.value; }});
-    const openBtn = h('button', {class:'btn', style:{flex:'0 0 auto'}}, '打开');
+    const input = h('input', {value: val, placeholder: t('mm.community.placeholder'), oninput:(e)=>{ m.extra=m.extra||{}; m.extra.community_links = e.target.value; }});
+    const openBtn = h('button', {class:'btn', style:{flex:'0 0 auto'}}, t('mm.common.open'));
     openBtn.addEventListener('click', ()=>{
       const url = (m.extra && m.extra.community_links) ? String(m.extra.community_links).trim() : '';
       if (!url) return;
@@ -219,11 +263,11 @@
     let t = rows.find(x=>preferred.includes(String(x.name||'').toLowerCase()));
     if (!t && rows.length) t = rows[0];
     state.currentType = t ? t.name : null;
-    // 选择器模式：优先切换到指定 kind（含别名）
+    // In selector mode: prefer switching to specified kind (with aliases)
     if (state.selector.on && state.selector.kind) {
       const want = normalizeTypeName(state.selector.kind);
       const found = rows.find(x=> normalizeTypeName(x && x.name) === want || String(x && x.name).toLowerCase() === (want+'s'));
-      // 修改：若未在 /types 中找到，也强制为 want，避免回落到 checkpoint
+      // Change: if not found in /types, force to want to avoid falling back to checkpoint
       state.currentType = found ? found.name : want;
     }
     renderTypeTabs();
@@ -243,7 +287,7 @@
 
   // Tags facets & dropdown
   async function loadFacets(){
-    // 选择器模式下强制使用 kind 作为过滤类型（当 currentType 缺失时）
+    // In selector mode, force using kind as filter type (when currentType is missing)
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
     const effectiveType = state.currentType || forcedType;
     if (!effectiveType) { if (el.tagDropdown) el.tagDropdown.innerHTML=''; state.tagCandidates = []; return; }
@@ -252,7 +296,8 @@
     if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (selected) url.searchParams.set('selected', selected);
-    url.searchParams.set('mode', state.tagsMode);
+    // always use ALL mode on backend
+    url.searchParams.set('mode', 'all');
     const facets = await api(url.pathname + '?' + url.searchParams.toString());
     try {
       const byTypeUrl = new URL(location.origin + '/tags/by-type');
@@ -276,7 +321,7 @@
     el.tagDropdown.innerHTML = '';
     const items = facets.filter(f=> String(f.name) !== String(state.currentType||''));
     if (!items.length) {
-      el.tagDropdown.appendChild(h('div', {class:'empty'}, '暂无可筛选标签'));
+      el.tagDropdown.appendChild(h('div', {class:'empty'}, t('mm.tags.empty')));
       return;
     }
     items.forEach(f=>{
@@ -294,18 +339,19 @@
   // Models
   async function loadModels(){
     const url = new URL(location.origin + '/models');
-    // 选择器模式优先用 /types 命中���真实类型，其次才使用 URL kind 规范化，保证仅列出该大类
+    // In selector mode, try to use the real type from /types first; then fall back to normalized kind from URL to restrict the main category
     const forcedType = (state.selector.on && state.selector.kind) ? normalizeTypeName(state.selector.kind) : null;
     const effectiveType = state.currentType || forcedType;
     if (effectiveType) url.searchParams.set('type', effectiveType);
     if (state.q) url.searchParams.set('q', state.q);
     if (state.selectedTags.size>0) url.searchParams.append('tags', Array.from(state.selectedTags).join(','));
-    url.searchParams.set('tags_mode', state.tagsMode);
+    // always use ALL mode for tags filtering
+    url.searchParams.set('tags_mode', 'all');
     url.searchParams.set('limit', '100');
     const data = await api(url.pathname + '?' + url.searchParams.toString());
     state.models = data.items || [];
     state.total = data.total || 0;
-    // 新增：将预选 keys 映射到当前批次 items 的 id 集合，并初始化默认强度
+    // map preselected keys for lora
     if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
       for (const m of state.models){
         const key = identityForModel(m);
@@ -322,7 +368,7 @@
     renderModels();
   }
 
-  // 悬浮预览
+  // Hover preview
   const hoverPreview = { el: null, timer: null, pos: {x: 0, y: 0} };
   function createHoverEl(){
     if (hoverPreview.el) return hoverPreview.el;
@@ -380,7 +426,7 @@
     el.modelsContainer.className = state.viewMode === 'cards' ? 'cards' : 'list';
     el.modelsContainer.innerHTML = '';
     if (!state.models.length){
-      el.modelsContainer.appendChild(h('div', {class:'empty'}, '无结果'));
+      el.modelsContainer.appendChild(h('div', {class:'empty'}, t('mm.empty')));
       return;
     }
     const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
@@ -391,9 +437,9 @@
       const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
       const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
       const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
-      const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'model');
+      const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.model'));
       const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
-      const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'CLIP');
+      const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.clip'));
       const sc = num('sc', s.sc, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sc=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
       wrap.append(smLab, sm, scLab, sc);
       return wrap;
@@ -405,7 +451,7 @@
       if (state.viewMode === 'cards'){
         const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>{
           if (isLoraSelector){
-            // 点击卡片：纳入并聚焦（不取消）
+            // Click card: include and focus (do not toggle off)
             includeModel(m);
             state.selectedModel = JSON.parse(JSON.stringify(m));
             state.originalDetail = JSON.parse(JSON.stringify(m));
@@ -418,14 +464,14 @@
         }});
         const badge = h('span', {class:'badge'}, m.type);
         const topChildren = [badge];
-        // 复选框：仅用于取消（也支持重新勾选纳入）
+        // Checkbox: used primarily to remove (also supports re-including)
         if (isLoraSelector){
           const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
             stop(e);
             const on = e.currentTarget && e.currentTarget.checked;
             if (on) includeModel(m); else removeModel(m);
             updateActionsState();
-            // 如果刚取消且是当前蓝色高亮，可保持右侧信息不变，符合“最近选择”逻辑
+            // If just unchecked while card is highlighted, keep right panel content to match "most recent selection" behavior
             renderModels();
           }});
           topChildren.push(h('span', {style:{marginLeft:'auto'}}, chk));
@@ -456,7 +502,7 @@
             selectModel(m);
           }
         }});
-        // 复选框列
+        // Checkbox column
         if (isLoraSelector){
           const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
             stop(e);
@@ -464,7 +510,7 @@
             if (on) includeModel(m); else removeModel(m);
             updateActionsState();
             row.classList.toggle('picked', !!on);
-            // 列表模式避免整页重绘，仅更新当前行的强度区域
+            // In list mode, avoid repainting the whole page; update strength controls for this row only
             const old = row.querySelector('.lora-strengths'); if (old) old.remove();
             if (on){ row.appendChild(createStrengthControls(m)); }
           }});
@@ -492,26 +538,26 @@
     renderModels();
   }
 
-  // 标签 chips 编辑器（类型标签置灰不可删；其他标签仅在点击 × 时删除）
+  // Tag chips editor (type tag is grayed out and not removable; others are removed via ×)
   function createTagChipsEditor(m){
     const box = h('div', {class:'chips'});
     const typeName = m.type || '';
-    // 初始化为“用户标签”（不含类型标签），以经典chips方式编辑
+    // Initialize as user tags (excluding type tag), edited in classic chips manner
     if (!Array.isArray(m.__tags)){
       m.__tags = (Array.isArray(m.tags)? m.tags: []).filter(t=>t && t!==typeName);
     }
     const tagsSet = new Set(m.__tags.map(sanitizeTagName).filter(Boolean));
 
-    const input = h('input', {class:'chips-input', placeholder:'输入标签，空格/逗号/回车添加'});
+    const input = h('input', {class:'chips-input', placeholder: t('mm.tags.inputPlaceholder')});
     const suggestWrap = h('div', {class:'chips-suggest hidden'});
 
     function renderChips(){
       box.querySelectorAll('.chip').forEach(n=>n.remove());
-      // 不再渲染类型标签chip，仅渲染可编辑的用户标签
+      // Do not render the type tag chip; only render editable user tags
       Array.from(tagsSet).forEach(tag=>{
         const chip = h('span', {class:'chip', onclick:(e)=>{ e.stopPropagation(); }}, [
           tag,
-          h('button', {class:'chip-x', title:'移除', onclick:(e)=>{ e.preventDefault(); e.stopPropagation(); tagsSet.delete(tag); syncBack(); renderChips(); }}, '×')
+          h('button', {class:'chip-x', title: t('mm.tags.remove'), onclick:(e)=>{ e.preventDefault(); e.stopPropagation(); tagsSet.delete(tag); syncBack(); renderChips(); }}, '×')
         ]);
         box.insertBefore(chip, input);
       });
@@ -546,14 +592,14 @@
       suggestWrap.classList.remove('hidden');
     }
 
-    // 仅在 Enter/空格/逗号提交；不支持 Backspace 批量清空
+    // Submit only on Enter/Space/Comma; Backspace bulk clear is not supported
     input.addEventListener('keydown', (e)=>{
       if (e.key==='Enter' || e.key===' ' || e.key===','){ e.preventDefault(); commitFromInput(); suggestWrap.classList.add('hidden'); }
     });
     input.addEventListener('input', ()=> refreshSuggest());
     input.addEventListener('blur', ()=> setTimeout(()=>{ suggestWrap.classList.add('hidden'); }, 150));
 
-    // 点击容器仅聚焦输入，不修改标签
+    // Clicking the container focuses the input only; it doesn't modify tags
     box.addEventListener('click', ()=>{ input.focus(); });
 
     box.append(input, suggestWrap);
@@ -565,16 +611,16 @@
     const url = (m.extra && Array.isArray(m.extra.images) && m.extra.images[0]) ? m.extra.images[0] : '';
     const filename = url ? (url.split('/').pop() || '') : '';
     const wrap = h('label', {class:'field'});
-    const lab = h('span', {class:'label'}, '示例图片');
+    const lab = h('span', {class:'label'}, t('mm.image.sample'));
     const nameBox = h('input', {value: filename || '—', disabled: ''});
-    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, '上传');
+    const btn = h('button', {class: 'btn', style:{flex:'0 0 auto'}}, t('mm.btn.upload'));
     const fileInput = h('input', {type:'file', accept:'image/*', style:'display:none'});
 
     btn.addEventListener('click', ()=> fileInput.click());
     fileInput.addEventListener('change', async ()=>{
       const f = fileInput.files && fileInput.files[0];
       if (!f) return;
-      btn.disabled = true; const old = btn.textContent; btn.textContent = '上传中…';
+      btn.disabled = true; const old = btn.textContent; btn.textContent = t('mm.common.uploading');
       try{
         const r = await fetch(`/models/${m.id}/image`, {method:'PUT', headers:{'Content-Type': f.type || 'application/octet-stream', 'X-Filename': f.name}, body: f});
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -586,7 +632,7 @@
         const found = state.models.find(it=>it.id===m.id); if (found) { found.images = [imageUrl]; }
         renderModels();
       }catch(err){
-        alert('上传失败: ' + (err && err.message ? err.message : err));
+        alert(t('mm.upload.fail') + (err && err.message ? err.message : err));
       }finally{
         btn.disabled = false; btn.textContent = old; fileInput.value = '';
       }
@@ -599,7 +645,7 @@
   function renderDetail(){
     const m = state.selectedModel;
     if (!m){
-      el.detailName.textContent = '未选择';
+      el.detailName.textContent = t('mm.detail.none');
       el.detailFields.innerHTML = '';
       el.detailImage.style.backgroundImage = '';
       updateActionsState();
@@ -617,70 +663,39 @@
 
     el.detailFields.innerHTML='';
     el.detailFields.append(
-      ro('类型', m.type),
-      ro('文件名', m.name || (m.path? m.path.split(/[\/\\]/).pop(): '—')),
-      ro('路径', m.path),
-      ro('大小', formatSize(m.size_bytes)),
-      ro('添加时间', formatMs(m.created_at)),
+      ro(t('mm.detail.type'), m.type),
+      ro(t('mm.detail.filename'), m.name || (m.path? m.path.split(/[\/\\]/).pop(): '—')),
+      ro(t('mm.detail.path'), m.path),
+      ro(t('mm.detail.size'), formatSize(m.size_bytes)),
+      ro(t('mm.detail.createdAt'), formatMs(m.created_at)),
       createShaRow(m),
       createCommunityLinkRow(m),
-      rwArea('描述', 'description', '模型描述'),
+      rwArea(t('mm.detail.descriptionLabel'), 'description', t('mm.detail.descriptionPlaceholder')),
       createImageUploadRow(m)
     );
-    // 标签标题行（仅标题在 label 内）
     el.detailFields.append(
-      h('label', {class:'field'}, [h('span', {class:'label'}, '标签')])
+      h('label', {class:'field'}, [h('span', {class:'label'}, t('mm.detail.tags'))])
     );
-    // 标签编辑器框置于 label 外，独占一行
     el.detailFields.append(tagsEditor);
-    // Prompts 标题与编辑器（保持原有结构）
     el.detailFields.append(
-      h('label', {class:'field'}, [h('span', {class:'label'}, 'Prompts')]),
+      h('label', {class:'field'}, [h('span', {class:'label'}, t('mm.detail.prompts'))]),
       promptsEditor
     );
     updateActionsState();
-  }
-
-  function updateActionsState(){
-    if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
-    const has = !!state.selectedModel;
-    if (state.selector.on){
-      el.saveBtn.style.display = 'none';
-      el.revertBtn.style.display = 'none';
-      if (el.confirmBtn){
-        el.confirmBtn.style.display = '';
-        const kind = String(state.selector.kind||'').toLowerCase();
-        let can = false;
-        if (kind === 'checkpoint' || kind === 'checkpoints') {
-          can = !!(state.selectedModel && (state.selectedModel.ckpt_name || state.selectedModel.path));
-        } else if (kind === 'lora' || kind === 'loras') {
-          can = state.selector.selectedIds && state.selector.selectedIds.size > 0;
-        } else {
-          can = has;
-        }
-        el.confirmBtn.disabled = !can;
-      }
-    } else {
-      el.saveBtn.style.display = '';
-      el.revertBtn.style.display = '';
-      el.saveBtn.disabled = !has;
-      el.revertBtn.disabled = !has;
-      if (el.confirmBtn) el.confirmBtn.style.display = 'none';
-    }
   }
 
   function createPromptsEditor(m){
     const box = h('div', {style:{display:'flex',flexDirection:'column',gap:'8px', width:'100%'}});
     const get = (k)=> (m.extra && m.extra.prompts && m.extra.prompts[k]) || '';
     const set = (k,v)=>{ m.extra=m.extra||{}; m.extra.prompts=m.extra.prompts||{}; m.extra.prompts[k]=v; };
-    const pos = h('textarea', {placeholder:'正向提示词', oninput:(e)=>set('positive', e.target.value)}, get('positive'));
-    const neg = h('textarea', {placeholder:'反向提示词', oninput:(e)=>set('negative', e.target.value)}, get('negative'));
+    const pos = h('textarea', {placeholder: t('mm.prompts.positive'), oninput:(e)=>set('positive', e.target.value)}, get('positive'));
+    const neg = h('textarea', {placeholder: t('mm.prompts.negative'), oninput:(e)=>set('negative', e.target.value)}, get('negative'));
     pos.rows = 3; neg.rows = 3;
     box.append(pos, neg);
     return box;
   }
 
-  // 移除参数编辑器与 suggestParamKey
+  // Parameters editor and suggestParamKey removed
 
   function revertDetail(){
     if (!state.originalDetail) return;
@@ -700,7 +715,7 @@
       const resp = await apiJSON('POST', `/models/${m.id}/tags`, {add, remove});
       m.tags = resp.tags;
     }
-    // Save extra：不再提交 params
+    // Save extra: params no longer submitted
     m.extra = m.extra || {};
     const extraPayload = {};
     ['description','community_links','images','prompts'].forEach(k=>{
@@ -713,7 +728,7 @@
     state.originalDetail = JSON.parse(JSON.stringify(m));
     await loadModels();
     renderDetail();
-    const txt = el.saveBtn.textContent; el.saveBtn.textContent = '已保存'; setTimeout(()=>{ el.saveBtn.textContent = txt; }, 1000);
+    const txt = el.saveBtn.textContent; el.saveBtn.textContent = t('mm.saved'); setTimeout(()=>{ el.saveBtn.textContent = txt; }, 1000);
   }
 
   function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
@@ -725,14 +740,13 @@
   function sendSelection(ev){
     if (!state.selector.on) return;
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
-    // Shift 按住表示追加；默认替换
     const mode = (ev && ev.shiftKey) ? 'append' : 'replace';
     if (kind === 'lora' || kind === 'loras'){
       const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
-      if (!picked.length) { alert('请至少选择一个 LoRA'); return; }
+      if (!picked.length) { alert(t('mm.selector.needLora')); return; }
       const items = picked.map(m=>{
         const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
-        const value = (m && m.lora_name) ? m.lora_name : base; // 优先相对名
+        const value = (m && m.lora_name) ? m.lora_name : base; // prefer relative name
         const label = (m && (m.name || base)) || String(value);
         const st = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
         return { value, label, sm: Number(st.sm)||1.0, sc: Number(st.sc)||1.0 };
@@ -741,31 +755,46 @@
       try { window.parent.postMessage(msg, '*'); } catch(_) {}
       return;
     }
-    // 默认 checkpoint 单选
+    // Default: checkpoint single select
     const m = state.selectedModel;
-    if (!m) { alert('未选择模型'); return; }
+    if (!m) { alert(t('mm.selector.none')); return; }
     let value = null;
     if (kind === 'checkpoint' || kind === 'checkpoints') {
       value = m.ckpt_name || m.path || m.name || null;
     } else {
       value = m.path || m.name || null;
     }
-    if (!value) { alert('无有效选择'); return; }
+    if (!value) { alert(t('mm.selector.invalid')); return; }
     const label = (m && (m.name || (m.path ? m.path.split(/[\\\/]/).pop() : ''))) || String(value);
     const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind, value, label } };
     try { window.parent.postMessage(msg, '*'); } catch(_) {}
   }
 
+  function postCloseMessage(){
+    try{
+      if (state.selector && state.selector.on){
+        const msg = { type: 'hikaze-mm-cancel', requestId: state.selector.requestId };
+        window.parent && window.parent.postMessage(msg, '*');
+      } else {
+        const msg = { type: 'hikaze-mm-close' };
+        window.parent && window.parent.postMessage(msg, '*');
+      }
+    }catch(_){ }
+  }
+
   async function boot(){
     console.debug('[HikazeMM] boot start');
+    await I18N.init();
+    // Apply initial i18n for static DOM
+    I18N.apply(document);
     wire();
     await loadTypes();
     await updateAll();
-    // 选择器模式 UI 调整
+    // UI tweaks in selector mode
     if (state.selector.on){
       try { if (el.typeTabs) el.typeTabs.style.display = 'none'; } catch(_) {}
     }
-    // 选择器模式下：绑定回车快捷确认
+    // In selector mode: bind Enter for quick confirm
     if (state.selector.on && el.confirmBtn){
       bind(el.confirmBtn, 'click', (e)=> sendSelection(e));
       document.addEventListener('keydown', (e)=>{
@@ -775,18 +804,32 @@
         }
       });
     }
+    // Global Esc close (selector: cancel; manager: close)
+    document.addEventListener('keydown', (e)=>{
+      if (e.key === 'Escape'){
+        e.preventDefault();
+        postCloseMessage();
+      }
+    });
+    // Toolbar close button
+    if (el.closeBtn){
+      el.closeBtn.addEventListener('click', (e)=>{ e.preventDefault(); postCloseMessage(); });
+    }
+    // Settings button placeholder (no-op currently)
+    if (el.settingsBtn){
+      el.settingsBtn.addEventListener('click', (e)=>{ e.preventDefault(); /* TODO: open settings in future */ });
+    }
     console.debug('[HikazeMM] boot done');
   }
 
   function wire(){
-    // 视图切换
+    // View toggle
     bind(el.cardViewBtn, 'click', ()=>{ state.viewMode='cards'; el.cardViewBtn && el.cardViewBtn.classList.add('active'); el.listViewBtn && el.listViewBtn.classList.remove('active'); renderModels(); }, 'cardViewBtn');
     bind(el.listViewBtn, 'click', ()=>{ state.viewMode='list'; el.listViewBtn && el.listViewBtn.classList.add('active'); el.cardViewBtn && el.cardViewBtn.classList.remove('active'); renderModels(); }, 'listViewBtn');
 
-    // 标签模式
-    qsa('input[name="tagsMode"]').forEach(r=> bind(r, 'change', (e)=>{ state.tagsMode = e.target.value; updateAll(); }, 'tagsMode'));
+    // removed tag mode radios: always ALL
 
-    // 标签下拉
+    // Tag dropdown
     bind(el.tagDropdownBtn, 'click', ()=>{ if (el.tagDropdown) el.tagDropdown.classList.toggle('hidden'); }, 'tagDropdownBtn');
     document.addEventListener('click', (e)=>{
       try{
@@ -794,29 +837,57 @@
       }catch(err){ console.debug('[HikazeMM] click handler skipped', err); }
     });
 
-    // 搜索与扫描
+    // Search and Scan
     bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); updateAll(); }, 300), 'searchInput');
     bind(el.refreshBtn, 'click', async ()=>{
       try{
         if (!el.refreshBtn) return;
-        el.refreshBtn.disabled = true; const old = el.refreshBtn.textContent; el.refreshBtn.textContent = '启动中…';
+        el.refreshBtn.disabled = true; const old = el.refreshBtn.textContent; el.refreshBtn.textContent = t('mm.scan.starting');
         await apiJSON('POST', '/scan/start', {full: false});
-        el.refreshBtn.textContent = '已启动';
+        el.refreshBtn.textContent = t('mm.scan.started');
         setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; updateAll(); }, 1000);
       }catch(err){
-        if (el.refreshBtn) el.refreshBtn.disabled = false; alert('启动扫描失败: ' + err.message);
+        if (el.refreshBtn) el.refreshBtn.disabled = false; alert(t('mm.scan.startFail') + err.message);
       }
     }, 'refreshBtn');
 
-    // 保存/撤销
-    bind(el.saveBtn, 'click', ()=>{ saveDetail().catch(err=>alert('保存失败: '+err.message)); }, 'saveBtn');
+    // Save/Revert
+    bind(el.saveBtn, 'click', ()=>{ saveDetail().catch(err=>alert(t('mm.save.fail')+err.message)); }, 'saveBtn');
     bind(el.revertBtn, 'click', ()=> revertDetail(), 'revertBtn');
 
     updateActionsState();
   }
 
+  function updateActionsState(){
+    if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
+    const has = !!state.selectedModel;
+    if (state.selector.on){
+      el.saveBtn.style.display = 'none';
+      el.revertBtn.style.display = 'none';
+      if (el.confirmBtn){
+        el.confirmBtn.style.display = '';
+        const kind = String(state.selector.kind||'').toLowerCase();
+        let can = false;
+        if (kind === 'checkpoint' || kind === 'checkpoints') {
+          can = !!(state.selectedModel && (state.selectedModel.ckpt_name || state.selectedModel.path));
+        } else if (kind === 'lora' || kind === 'loras') {
+          can = !!(state.selector.selectedIds && state.selector.selectedIds.size > 0);
+        } else {
+          can = has;
+        }
+        el.confirmBtn.disabled = !can;
+      }
+    } else {
+      el.saveBtn.style.display = '';
+      el.revertBtn.style.display = '';
+      el.saveBtn.disabled = !has;
+      el.revertBtn.disabled = !has;
+      if (el.confirmBtn) el.confirmBtn.style.display = 'none';
+    }
+  }
+
   boot().catch(err=>{
     console.error(err);
-    alert('初始化失败: ' + err.message);
+    alert(t('mm.init.fail') + err.message);
   });
 })();

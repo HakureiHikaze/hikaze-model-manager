@@ -1,8 +1,8 @@
 """
-HikazeCheckpointSelector - 自定义Checkpoint加载器（官方风格下拉 + 选择器按钮）
-- 外观：无输入端口；一个下拉小部件 ckpt_name（官方风格），外加“读取”按钮（由前端注入）
-- 输出：MODEL, CLIP, VAE（与官方 CheckpointLoaderSimple 一致）
-- 行为：用户可通过下拉或“读取”按钮选择；按钮回填同样写入 ckpt_name
+HikazeCheckpointSelector - Custom checkpoint loader (official-style dropdown + selector button)
+- Appearance: no input ports; one dropdown widget `ckpt_name` (official style) plus a "Read" button (injected by frontend)
+- Outputs: MODEL, CLIP, VAE (same as official CheckpointLoaderSimple)
+- Behavior: users can choose via dropdown or the selector button; the button also writes back to `ckpt_name`
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import folder_paths  # type: ignore
 class HikazeCheckpointSelector:
     @classmethod
     def INPUT_TYPES(cls):
-        # 与官方一致：直接提供 checkpoints 列表作为下拉
+        # Same as official: provide the checkpoints list directly for the dropdown
         return {
             "required": {
                 "ckpt_name": (folder_paths.get_filename_list("checkpoints"), {"tooltip": "要加载的模型（checkpoint）"}),
@@ -47,7 +47,7 @@ class HikazeCheckpointSelector:
 
     @classmethod
     def _load_backend_base_url(cls) -> str:
-        """读取插件 data/config.json 获取后端 host/port，默认 http://127.0.0.1:8789"""
+        """Read plugin data/config.json for backend host/port, default http://127.0.0.1:8789"""
         try:
             cfg_path = os.path.join(cls._plugin_root_dir(), "data", "config.json")
             if os.path.exists(cfg_path):
@@ -80,18 +80,17 @@ class HikazeCheckpointSelector:
     @staticmethod
     def _download_to_temp(image_url: str) -> Optional[Dict[str, str]]:
         """
-        下载图片到 ComfyUI 临时目录，返回 {filename, subfolder, type}
-        兼容 /media/ 相对路径或完整 URL。
+        Download an image into ComfyUI's temp directory and return {filename, subfolder, type}.
+        Supports either /media/ relative path or a full URL.
         """
         try:
-            # 规范化URL：如果是相对路径，以 http://host:port 作为前缀
+            # Normalize URL: if it's relative, the caller must prepend http://host:port
             base_dir = folder_paths.get_temp_directory()
             os.makedirs(base_dir, exist_ok=True)
-            # 解析文件名与后缀
+            # Parse filename and extension
             parsed = urllib.parse.urlparse(image_url)
             if not parsed.scheme:
-                # 认为是相对路径
-                # 调用方需传入完整 base_url + rel
+                # Treat as relative path (caller should pass complete base_url + rel)
                 return None
             ext = os.path.splitext(parsed.path)[1] or ".png"
             ts = int(time.time() * 1000)
@@ -109,7 +108,7 @@ class HikazeCheckpointSelector:
 
     @classmethod
     def _find_model_by_ckpt(cls, base_url: str, ckpt_name: str) -> Optional[Dict[str, Any]]:
-        # 通过 /models?q= 进行模糊查询，再在返回中精确匹配 ckpt_name 字段
+        # Fuzzy query via /models?q= then match ckpt_name exactly from results
         try:
             q = urllib.parse.quote(ckpt_name)
             url = f"{base_url}/models?q={q}&limit=50"
@@ -135,7 +134,7 @@ class HikazeCheckpointSelector:
                 return None
             pos = params.get("prompt") or params.get("positive") or ""
             neg = params.get("negative") or params.get("negative_prompt") or ""
-            # 仅在存在时拼装
+            # Only assemble when present
             lines: List[str] = []
             if pos:
                 lines.append(f"Positive: {pos}")
@@ -164,7 +163,7 @@ class HikazeCheckpointSelector:
                     break
             if first_url:
                 rel = first_url
-                # 构建完整 URL（兼容已是绝对URL的情况）
+                # Build full URL (compatible with already-absolute URLs)
                 if rel.startswith("http://") or rel.startswith("https://"):
                     full = rel
                 else:
@@ -190,7 +189,7 @@ class HikazeCheckpointSelector:
         return folder_paths.get_full_path_or_raise("checkpoints", ckpt_name)
 
     @classmethod
-    def VALIDATE_INPUTS(cls, ckpt_name: str):  # noqa: N802 (ComfyUI约定)
+    def VALIDATE_INPUTS(cls, ckpt_name: str):  # noqa: N802 (ComfyUI convention)
         if not ckpt_name or not isinstance(ckpt_name, str):
             return "未选择模型（ckpt_name 为空）"
         try:
@@ -207,7 +206,7 @@ class HikazeCheckpointSelector:
             output_clip=True,
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
-        # 构建 UI 预览（示例图 + prompts），失败则忽略，仅返回模型
+        # Build UI preview (sample image + prompts); ignore on failure and just return model
         ui_payload = None
         try:
             ui_payload = self._build_ui_payload(ckpt_name)

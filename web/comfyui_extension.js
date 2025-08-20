@@ -1,8 +1,33 @@
-// ComfyUI 菜单扩展 - Hikaze Model Manager
+// ComfyUI menu extension - Hikaze Model Manager
 
 import { app } from "../../scripts/app.js";
 
-// 全局状态管理
+// Lightweight i18n for extension (fetch from backend /web/i18n)
+const LANG_KEY = 'hikaze_mm_lang';
+const I18N = {
+    dict: {},
+    lang: 'zh-CN',
+    ready: false,
+    normalizeLang(l){
+        try{ let s = String(l||'').replace('_','-'); if (s.toLowerCase().startsWith('zh')) return 'zh-CN'; if (/^en(-|$)/i.test(s)) return 'en-US'; return 'zh-CN'; }catch(_){ return 'zh-CN'; }
+    },
+    getStored(){ try{ return localStorage.getItem(LANG_KEY) || 'system'; }catch(_){ return 'system'; } },
+    setStored(v){ try{ if (!v || v==='system') localStorage.setItem(LANG_KEY, 'system'); else localStorage.setItem(LANG_KEY, v); }catch(_){ } },
+    async init(){
+        try{
+            const stored = this.getStored();
+            const chosen = (stored && stored !== 'system') ? stored : ((navigator && (navigator.language || navigator.userLanguage)) || 'zh-CN');
+            this.lang = this.normalizeLang(chosen);
+            const url = `http://127.0.0.1:8789/web/i18n/${this.lang}.json`;
+            const res = await fetch(url);
+            if (res.ok){ this.dict = await res.json(); this.ready = true; }
+        }catch(err){ console.warn('[Hikaze] i18n load failed:', err); this.dict = {}; this.ready = false; }
+    },
+    t(k){ return (this.dict && Object.prototype.hasOwnProperty.call(this.dict, k)) ? this.dict[k] : k; },
+};
+const t = (k)=> I18N.t(k);
+
+// Global state management
 const HikazeManager = {
     modalWindow: null,
     isServerStarted: false,
@@ -13,7 +38,7 @@ const HikazeManager = {
     pending: new Map(), // requestId -> { node, widget, overlay, mode }
 };
 
-// 工具：规范化 LoRA 键（用于去重与预选匹配）
+// Utility: normalize LoRA key (for dedupe and preselect matching)
 function normalizeLoraKey(s){
     try{
         return String(s || '')
@@ -72,59 +97,60 @@ function ensureGroup(node, idx, item){
     if (!Array.isArray(node.widgets)) node.widgets = [];
     const groups = collectLoraGroups(node);
     const g = groups.get(idx) || {};
-    const labelName = `lora_${idx}`;
-    const labelOn = `lora_${idx}_on`;
-    const labelSm = `lora_${idx}_strength_model`;
-    const labelSc = `lora_${idx}_strength_clip`;
-    const labelRm = `lora_${idx}_remove`;
+    const nameLora = `lora_${idx}`;
+    const nameOn = `lora_${idx}_on`;
+    const nameSm = `lora_${idx}_strength_model`;
+    const nameSc = `lora_${idx}_strength_clip`;
+    const nameRm = `lora_${idx}_remove`;
 
-    // 同行布置：名称 + model + CLIP
+    // Arrange on the same row: name + model + CLIP
     const prevWpr = node.widgets_per_row;
     node.widgets_per_row = 3;
-    // 模型名
+    // model name
     if (!g.nameWidget){
-        const w = node.addWidget && node.addWidget('text', labelName, (item && item.label) || (item && item.key) || '', ()=>{}, { serialize: true });
-        if (w){ try{ w.label = labelName; }catch(_){} }
+        const w = node.addWidget && node.addWidget('text', nameLora, (item && item.label) || (item && item.key) || '', ()=>{}, { serialize: true });
+        // Do not set w.label here, the first widget in a row is special and its label is not displayed.
+        // Its value is the LoRA name itself.
     } else if (item && (item.label || item.key)){
         try{ g.nameWidget.value = item.label || item.key; }catch(_){ }
     }
     // model
     if (!g.smWidget){
-        const w = node.addWidget && node.addWidget('number', labelSm, (item && typeof item.sm==='number')? item.sm: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
-        if (w){ try{ w.label = 'model'; }catch(_){} }
+        const w = node.addWidget && node.addWidget('number', nameSm, (item && typeof item.sm==='number')? item.sm: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
+        if (w){ try{ w.label = t('mm.lora.model'); }catch(_){} }
     } else if (item && typeof item.sm === 'number'){
         try{ g.smWidget.value = item.sm; }catch(_){ }
-        try{ g.smWidget.label = 'model'; }catch(_){ }
+        try{ g.smWidget.label = t('mm.lora.model'); }catch(_){ }
     } else {
-        try{ g.smWidget.label = 'model'; }catch(_){ }
+        try{ g.smWidget.label = t('mm.lora.model'); }catch(_){ }
     }
     // CLIP
     if (!g.scWidget){
-        const w = node.addWidget && node.addWidget('number', labelSc, (item && typeof item.sc==='number')? item.sc: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
-        if (w){ try{ w.label = 'CLIP'; }catch(_){} }
+        const w = node.addWidget && node.addWidget('number', nameSc, (item && typeof item.sc==='number')? item.sc: 1.0, ()=>{}, { serialize: true, min: -10, max: 10, step: 0.05 });
+        if (w){ try{ w.label = t('mm.lora.clip'); }catch(_){} }
     } else if (item && typeof item.sc === 'number'){
         try{ g.scWidget.value = item.sc; }catch(_){ }
-        try{ g.scWidget.label = 'CLIP'; }catch(_){ }
+        try{ g.scWidget.label = t('mm.lora.clip'); }catch(_){ }
     } else {
-        try{ g.scWidget.label = 'CLIP'; }catch(_){ }
+        try{ g.scWidget.label = t('mm.lora.clip'); }catch(_){ }
     }
-    // 恢复默认行设置
+    // Restore widgets_per_row
     node.widgets_per_row = prevWpr ?? null;
 
-    // 启用开关（默认 true）
+    // Enable toggle (default true)
     if (!g.onWidget){
-        const w = node.addWidget && node.addWidget('checkbox', labelOn, true, ()=>{}, { serialize: true });
-        if (w){ try{ w.label = labelOn; }catch(_){} }
+        const w = node.addWidget && node.addWidget('toggle', nameOn, true, ()=>{}, { serialize: true });
+        if (w){ try{ w.label = nameOn; }catch(_){} }
     }
-    // 移除按钮
+    // Remove button
     if (!g.rmWidget){
-        const btn = node.addWidget && node.addWidget('button', labelRm, '移除', () => {
+        const btn = node.addWidget && node.addWidget('button', nameRm, t('mm.btn.remove'), () => {
             removeGroup(node, idx);
             try { node.setDirtyCanvas(true, true); } catch(_) {}
             try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
             try { if (node.onResize) node.onResize(node.size); } catch(_) {}
         }, { serialize: false });
-        if (btn) btn.label = labelRm;
+        // Do not set btn.label, the button text is already provided. The label property can interfere with layout.
     }
 }
 
@@ -138,7 +164,7 @@ function currentSelectedKeysForPreselect(node){
     return keys;
 }
 
-// 内联样式 - 避免外部CSS加载问题
+// Inline styles - avoid issues when loading external CSS
 const MODAL_STYLES = `
 .hikaze-modal-overlay {
     position: fixed !important;
@@ -151,38 +177,15 @@ const MODAL_STYLES = `
     display: block !important;
     backdrop-filter: blur(3px) !important;
 }
-.hikaze-modal-window {
-    position: fixed !important; /* 固定定位，避免 flex 居中影响拖拽 */
+/* Full-page container (no border/radius/shadow), only used to host the iframe */
+.hikaze-fullpage {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
     background: #2a2a2a !important;
-    border-radius: 8px !important;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5) !important;
-    border: 1px solid #555 !important;
     overflow: hidden !important;
-    min-width: 400px !important;
-    min-height: 300px !important;
-    max-width: 95vw !important;
-    max-height: 95vh !important;
-    display: flex !important;
-    flex-direction: column !important;
 }
-.hikaze-modal-header {
-    background: linear-gradient(135deg, #404040, #2a2a2a) !important;
-    color: #ffffff !important;
-    padding: 10px 14px !important;
-    display: flex !important;
-    justify-content: space-between !important;
-    align-items: center !important;
-    cursor: move !important;
-    user-select: none !important;
-    border-bottom: 1px solid #555 !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-}
-.hikaze-modal-header h3 { margin: 0 !important; font-size: 14px !important; color: #ffffff !important; }
-.hikaze-modal-controls { display: flex !important; gap: 6px !important; }
-.hikaze-modal-controls button { width: 28px !important; height: 28px !important; border: none !important; background: rgba(255,255,255,0.1) !important; color: #fff !important; border-radius: 4px !important; cursor: pointer !important; }
-.hikaze-modal-close:hover { background: #ff4444 !important; }
-.hikaze-modal-content { flex: 1 !important; position: relative !important; overflow: hidden !important; background: #2a2a2a !important; }
 .hikaze-loading { display:flex !important; align-items:center !important; justify-content:center !important; height:100% !important; color:#fff !important; }
 .hikaze-spinner { width: 32px !important; height: 32px !important; border: 3px solid rgba(255,255,255,0.1) !important; border-top:3px solid #4CAF50 !important; border-radius:50% !important; animation: hikaze-spin 1s linear infinite !important; }
 @keyframes hikaze-spin { 0%{transform:rotate(0)} 100%{transform:rotate(360deg)} }
@@ -191,7 +194,7 @@ const MODAL_STYLES = `
 .hikaze-menu-button:hover { background: linear-gradient(135deg, #45a049, #4CAF50) !important; transform: translateY(-1px) !important; box-shadow: 0 6px 16px rgba(76,175,80,0.4) !important; }
 `;
 
-// 加载样式
+// Load styles
 function loadStyles() {
     if (HikazeManager.stylesLoaded) return;
 
@@ -203,7 +206,7 @@ function loadStyles() {
     console.log('[Hikaze] Styles loaded');
 }
 
-// 检查后端服务状态
+// Check backend server status
 async function checkServerStatus() {
     try {
         const response = await fetch('http://127.0.0.1:8789/health', {
@@ -224,7 +227,7 @@ async function checkServerStatus() {
     }
 }
 
-// 等待服务器启动
+// Wait for server to start
 async function waitForServer(maxWaitTime = 15000) {
     const startTime = Date.now();
     const checkInterval = 1000;
@@ -244,94 +247,52 @@ async function waitForServer(maxWaitTime = 15000) {
     return false;
 }
 
-// 创建通用模态窗口
-function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http://127.0.0.1:8789/web/manager.html' } = {}) {
-    loadStyles();
+function currentLang(){ return I18N.lang || 'zh-CN'; }
 
-    const vw = window.innerWidth; const vh = window.innerHeight;
-    const modalWidth = Math.floor(vw * 0.6); const modalHeight = Math.floor(vh * 0.6);
-    const left = Math.max( (vw - modalWidth) >> 1, 10 );
-    const top = Math.max( (vh - modalHeight) >> 1, 10 );
+// Create a generic modal window
+function createOverlay({ title = t('mm.title.manager'), iframeSrc = 'http://127.0.0.1:8789/web/manager.html' } = {}) {
+    loadStyles();
 
     const overlay = document.createElement('div');
     overlay.className = 'hikaze-modal-overlay';
     overlay.innerHTML = `
-        <div class="hikaze-modal-window">
-            <div class="hikaze-modal-header">
-                <h3>${title}</h3>
-                <div class="hikaze-modal-controls">
-                    <button class="hikaze-modal-close" title="关闭">×</button>
-                </div>
-            </div>
-            <div class="hikaze-modal-content">
-                <div class="hikaze-loading">
-                    <div class="hikaze-spinner"></div>
-                    <p style="margin-left:8px">加载中…</p>
-                </div>
+        <div class="hikaze-modal-content hikaze-fullpage">
+            <div class="hikaze-loading">
+                <div class="hikaze-spinner"></div>
+                <p style="margin-left:8px">${t('mm.common.loading')}</p>
             </div>
         </div>`;
     document.body.appendChild(overlay);
 
-    const modal = overlay.querySelector('.hikaze-modal-window');
-    const header = overlay.querySelector('.hikaze-modal-header');
-    const closeBtn = overlay.querySelector('.hikaze-modal-close');
-
-    // 通过JS设置尺寸与位置，避免内联样式解析问题
-    if (modal) {
-        try {
-            modal.style.width = modalWidth + 'px';
-            modal.style.height = modalHeight + 'px';
-            modal.style.left = left + 'px';
-            modal.style.top = top + 'px';
-        } catch(_) {}
-    }
+    // lock body scroll while overlay is open
+    const prevOverflow = document.body && document.body.style ? document.body.style.overflow : '';
+    try { if (document.body && document.body.style) document.body.style.overflow = 'hidden'; } catch(_){}
 
     const escHandler = (e) => { if (e.key === 'Escape') doClose(); };
     const doClose = () => {
         document.removeEventListener('keydown', escHandler);
+        try { if (document.body && document.body.style) document.body.style.overflow = prevOverflow || ''; } catch(_){ }
         if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
     };
 
-    if (closeBtn) closeBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); doClose(); };
+    // expose unified close method for external callers
+    overlay.__hikazeClose = doClose;
+
     document.addEventListener('keydown', escHandler);
-    overlay.onclick = (e) => { /* prevent accidental close */ };
+    overlay.onclick = (e) => { /* full-page overlay; clicking the backdrop does not close */ };
 
-    // 拖拽
-    if (header && modal) {
-        let isDragging = false; let startX = 0, startY = 0; let startLeft = 0, startTop = 0;
-        header.onmousedown = (e) => {
-            if (e.target === closeBtn) return;
-            isDragging = true;
-            startX = e.clientX; startY = e.clientY;
-            const ml = parseInt(modal.style.left || '0', 10) || modal.getBoundingClientRect().left;
-            const mt = parseInt(modal.style.top || '0', 10) || modal.getBoundingClientRect().top;
-            startLeft = ml; startTop = mt;
-            const onMove = (ev) => {
-                if (!isDragging) return;
-                const dx = ev.clientX - startX; const dy = ev.clientY - startY;
-                modal.style.left = (startLeft + dx) + 'px';
-                modal.style.top = (startTop + dy) + 'px';
-            };
-            const onUp = () => {
-                isDragging = false;
-                document.removeEventListener('mousemove', onMove);
-                document.removeEventListener('mouseup', onUp);
-            };
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
-            e.preventDefault();
-        };
-    }
-
-    // 加载 iframe
+    // load iframe
     (async () => {
         const loading = overlay.querySelector('.hikaze-loading');
         const ok = await waitForServer();
-        if (!ok) { if (loading) loading.innerHTML = '<div class="hikaze-error">⚠️ 后端未就绪</div>'; return; }
+        if (!ok) { if (loading) loading.innerHTML = `<div class="hikaze-error">${t('mm.error.backendNotReady')}</div>`; return; }
         const iframe = document.createElement('iframe');
-        iframe.src = iframeSrc;
+        // append language param for in-iframe i18n
+        const hasQ = iframeSrc.includes('?');
+        const sep = hasQ ? '&' : '?';
+        iframe.src = `${iframeSrc}${sep}lang=${encodeURIComponent(currentLang())}`;
         iframe.onload = () => { if (loading) loading.style.display = 'none'; };
-        iframe.onerror = () => { if (loading) loading.innerHTML = '<div class="hikaze-error">⚠️ 无法加载</div>'; };
+        iframe.onerror = () => { if (loading) loading.innerHTML = `<div class="hikaze-error">${t('mm.error.loadFail')}</div>`; };
         const content = overlay.querySelector('.hikaze-modal-content');
         if (content) content.appendChild(iframe);
     })();
@@ -339,23 +300,23 @@ function createOverlay({ title = '🎨 Hikaze Model Manager', iframeSrc = 'http:
     return overlay;
 }
 
-// 打开模型管理器
+// Open model manager
 function openModelManager() {
     try {
         console.log('[Hikaze] Opening model manager...');
-        // 缓存：保留原有单例（不与选择器共享）
+        // Cache: keep a singleton window (not shared with selector)
         if (HikazeManager.modalWindow && document.body.contains(HikazeManager.modalWindow)) {
             HikazeManager.modalWindow.style.display = 'block';
             return;
         }
-        HikazeManager.modalWindow = createOverlay({ title: '🎨 Hikaze Model Manager', iframeSrc: 'http://127.0.0.1:8789/web/manager.html' });
+        HikazeManager.modalWindow = createOverlay({ title: t('mm.title.manager'), iframeSrc: 'http://127.0.0.1:8789/web/manager.html' });
     } catch (error) {
         console.error('[Hikaze] Error opening model manager:', error);
-        alert('打开模型管理器时发生错误: ' + error.message);
+        alert(t('mm.error.openManager') + error.message);
     }
 }
 
-// 打开模型选择器（selector 模式）
+// Open model selector (selector mode)
 function openModelSelector({ kind = 'checkpoint', requestId, selected = [] }) {
     const kindNorm = String(kind || '').toLowerCase();
     const isLora = kindNorm.startsWith('lora');
@@ -365,22 +326,23 @@ function openModelSelector({ kind = 'checkpoint', requestId, selected = [] }) {
         const keys = selected.map(normalizeLoraKey).filter(Boolean);
         if (keys.length){ qs.set('selected', keys.join(',')); }
     }
-    const overlay = createOverlay({ title: isLora ? '🧪 选择 LoRA' : '🧪 选择模型', iframeSrc: `${base}?${qs.toString()}` });
+    const title = isLora ? t('mm.title.selectorLora') : t('mm.title.selectorGeneric');
+    const overlay = createOverlay({ title, iframeSrc: `${base}?${qs.toString()}` });
     return overlay;
 }
 
-// 创建菜单按钮
+// Create menu button
 function createMenuButton() {
-    // 避免重复创建
+    // Avoid duplicate creation
     if (HikazeManager.menuButton && document.body.contains(HikazeManager.menuButton)) {
         return true;
     }
 
     const button = document.createElement('button');
     button.className = 'hikaze-menu-button';
-    button.textContent = '🎨 模型管理器';
-    button.title = 'Hikaze Model Manager';
-    // 强制设置偏移，确保与样式一致
+    button.textContent = t('mm.menu.button');
+    button.title = t('mm.title.manager');
+    // Force offset to align with styles
     button.style.top = '48px';
     button.style.right = '10px';
 
@@ -397,17 +359,17 @@ function createMenuButton() {
     return true;
 }
 
-// 尝试集成到ComfyUI菜单
+// Try integrating into ComfyUI menu
 function tryMenuIntegration() {
     HikazeManager.initAttempts++;
 
-    // 首先尝试创建固定按钮（更可靠）
+    // Prefer creating a fixed button (more reliable)
     if (createMenuButton()) {
         console.log('[Hikaze] Menu integration successful');
         return true;
     }
 
-    // 如果失败且未达到最大尝试次数，继续重试
+    // Retry if it fails and hasn't reached max attempts
     if (HikazeManager.initAttempts < HikazeManager.maxInitAttempts) {
         setTimeout(tryMenuIntegration, 1000);
         return false;
@@ -417,7 +379,7 @@ function tryMenuIntegration() {
     return false;
 }
 
-// 为节点注入“读取”按钮并保证 ckpt_name 可编辑
+// Inject a "Read" button for the node and ensure ckpt_name is editable
 function enhanceCheckpointSelectorNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazeCheckpointSelector') return;
@@ -427,12 +389,12 @@ function enhanceCheckpointSelectorNode(node){
             try { wPath.readonly = false; wPath.disabled = false; wPath.hidden = false; } catch(_) {}
             if (wPath.options) { try { wPath.options.readonly = false; } catch(_) {} }
         }
-        const btn = node.addWidget && node.addWidget('button', '读取', '读取', () => {
+        const btn = node.addWidget && node.addWidget('button', 'read_selector', t('mm.btn.read'), () => {
             const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
             const overlay = openModelSelector({ kind: 'checkpoint', requestId });
             HikazeManager.pending.set(requestId, { node, wPath, overlay });
         }, { serialize: false });
-        if (btn) btn.label = '读取';
+        if (btn) btn.label = 'read_selector';
         try { node.setDirtyCanvas(true, true); } catch(_) {}
     } catch(err){
         console.warn('[Hikaze] enhance node failed:', err);
@@ -443,14 +405,14 @@ function enhancePowerLoraLoaderNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
         if (!Array.isArray(node.widgets)) node.widgets = [];
-        // 若存在旧的只读展示，尽量迁移为分组
+        // If there is a legacy read-only display, migrate it to grouped widgets
         try{
             const js = node.widgets.find(w=> w && (w.name === 'lora_items_json'));
             if (js && js.value){
                 try{
                     const arr = JSON.parse(String(js.value||'[]'));
                     clearAllGroups(node);
-                    // 移除只读项
+                    // Remove read-only items
                     node.widgets = node.widgets.filter(w=>{
                         const n = w && (w.name || w.label) || '';
                         return !(typeof n === 'string' && (/^lora_item_\d+$/.test(n) || n === 'lora_items_json'));
@@ -463,42 +425,43 @@ function enhancePowerLoraLoaderNode(node){
                 }catch(_){ /* ignore */ }
             }
         }catch(_){ }
-        // 若仍不存在任何分组，创建一行空白
+        // If still no groups exist, create an empty one
         const groups = collectLoraGroups(node);
         if (!groups.size){ ensureGroup(node, 0, { key:'', label:'', sm:1.0, sc:1.0 }); }
-        // 选择入口按钮
-        const btn = node.addWidget && node.addWidget('button', '选择模型…', '选择模型…', () => {
+        // Selection entry button
+        const btn = node.addWidget && node.addWidget('button', 'choose_models', t('mm.btn.chooseModelEllipsis'), () => {
             const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
             const selected = currentSelectedKeysForPreselect(node);
             const overlay = openModelSelector({ kind: 'lora', requestId, selected });
             HikazeManager.pending.set(requestId, { node, overlay, mode: 'replace' });
         }, { serialize: false });
-        if (btn) btn.label = '选择模型…';
+        if (btn) btn.label = 'choose_models';
         try { node.setDirtyCanvas(true, true); } catch(_) {}
     } catch(err){
         console.warn('[Hikaze] enhance power lora node failed:', err);
     }
 }
 
-// ComfyUI扩展注册
+// ComfyUI extension registration
 app.registerExtension({
     name: "hikaze.model.manager",
 
     async setup() {
         console.log('[Hikaze] Extension setup starting...');
 
-        // 加载样式
+        // Load styles and i18n
         loadStyles();
+        await I18N.init();
 
-        // 延迟初始化以确保DOM完全加载
+        // Delay initialization to ensure DOM is fully loaded
         setTimeout(() => {
-            // 仅保留右上角按钮
+            // Keep only the top-right button
             tryMenuIntegration();
-            // 选择结果回填监听
+            // Listen for selection results and write back
             setupMessageListener();
         }, 2000);
 
-        // 检查服务器状态
+        // Check server status
         setTimeout(async () => {
             const isReady = await checkServerStatus();
             console.log(isReady ? '[Hikaze] Backend server is ready' : '[Hikaze] Backend server not ready, will retry when opening manager');
@@ -506,13 +469,13 @@ app.registerExtension({
     },
 
     async nodeCreated(node){
-        // 增强我们自定义的节点（加保护，避免异常冒泡）
+        // Enhance our custom nodes (guarded to avoid bubbling exceptions)
         try { enhanceCheckpointSelectorNode(node); } catch (err) { console.warn('[Hikaze] nodeCreated checkpoint enhance failed:', err); }
         try { enhancePowerLoraLoaderNode(node); } catch (err) { console.warn('[Hikaze] nodeCreated lora enhance failed:', err); }
     }
 });
 
-// 全局函数导出
+// Global function exports
 window.hikazeOpenManager = openModelManager;
 window.hikazeManager = {
     open: openModelManager,
@@ -523,11 +486,35 @@ window.hikazeManager = {
 
 console.log('[Hikaze] Extension script loaded');
 
-// 选择结果回填监听
+// Listen for selection results and write back to nodes
 function setupMessageListener(){
     window.addEventListener('message', (ev)=>{
         const data = ev && ev.data;
-        if (!data || data.type !== 'hikaze-mm-select') return;
+        if (!data) return;
+        // handle manager close request from iframe
+        if (data.type === 'hikaze-mm-close'){
+            const ov = HikazeManager.modalWindow;
+            if (ov && typeof ov.__hikazeClose === 'function') ov.__hikazeClose();
+            else if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
+            HikazeManager.modalWindow = null;
+            return;
+        }
+        // handle selector cancel (close overlay tied to requestId)
+        if (data.type === 'hikaze-mm-cancel'){
+            const requestId = data.requestId;
+            if (requestId && HikazeManager.pending.has(requestId)){
+                try{
+                    const ctx = HikazeManager.pending.get(requestId);
+                    const overlay = ctx && ctx.overlay;
+                    if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
+                    else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                } finally {
+                    HikazeManager.pending.delete(requestId);
+                }
+            }
+            return;
+        }
+        if (data.type !== 'hikaze-mm-select') return;
         const { requestId, payload } = data;
         const ctx = HikazeManager.pending.get(requestId);
         if (!ctx) return;
@@ -546,7 +533,8 @@ function setupMessageListener(){
                 try { node.setDirtyCanvas(true, true); } catch(_) {}
                 try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
                 try { if (node.onResize) node.onResize(node.size); } catch(_) {}
-                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
+                else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
                 return;
             }
             const pathVal = payload && payload.value ? String(payload.value) : '';
@@ -567,7 +555,8 @@ function setupMessageListener(){
             try { node.setDirtyCanvas(true, true); } catch(_) {}
             try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
             try { if (node.onResize) node.onResize(node.size); } catch(_) {}
-            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
+            else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
         } finally {
             HikazeManager.pending.delete(requestId);
         }

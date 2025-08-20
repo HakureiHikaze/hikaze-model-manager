@@ -30,7 +30,7 @@ def _find_repo_root(start_dir: str) -> str:
 REPO_ROOT = _find_repo_root(PLUGIN_DIR)
 DEFAULT_MODEL_ROOTS = [os.path.join(REPO_ROOT, "models")]
 
-# 常见类型别名归一
+# Common type-name aliases normalization
 _NAME_ALIASES = {
     "checkpoints": "checkpoint",
     "loras": "lora",
@@ -44,7 +44,7 @@ DEFAULT_HOST = "127.0.0.1"
 
 
 def _load_folder_paths_module(repo_root: str):
-    """尝试从仓库根加载 folder_paths.py，返回模块或 None。"""
+    """Attempt to load folder_paths.py from the repo root; return module or None."""
     try:
         fp = os.path.join(repo_root, "folder_paths.py")
         if not os.path.exists(fp):
@@ -69,7 +69,7 @@ class AppConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     model_roots: List[str] = None
-    # 运行时计算：根路径 -> 类型名 的映射（当根目录即为类型目录时使用）
+    # Runtime: mapping from root path to type name (used when a root is exactly a type directory)
     root_type_map: Dict[str, str] = field(default_factory=dict)
 
     @staticmethod
@@ -90,7 +90,7 @@ class AppConfig:
         if not roots_cfg:
             roots_cfg = [p for p in DEFAULT_MODEL_ROOTS if os.path.isdir(p)]
 
-        # 合并 ComfyUI 的额外路径（如 extra_model_paths.yaml 中定义的）
+        # Merge additional paths from ComfyUI (e.g., defined in extra_model_paths.yaml)
         extra_roots: List[Tuple[str, str]] = []  # (abs_path, type)
         fp_mod = _load_folder_paths_module(REPO_ROOT)
         if fp_mod is not None:
@@ -100,7 +100,7 @@ class AppConfig:
                 if isinstance(mapping, dict):
                     for tname, val in mapping.items():
                         try:
-                            # 兼容 (paths, recursive) 或 (paths, recursive, _) 形式
+                            # Compatible with (paths, recursive) or (paths, recursive, _) formats
                             paths = val[0] if isinstance(val, (list, tuple)) and val else []
                             for p in paths or []:
                                 if not isinstance(p, str):
@@ -113,21 +113,21 @@ class AppConfig:
             except Exception:
                 pass
 
-        # 统一去重&规范化
+        # Normalize and de-duplicate
         all_roots_set = {os.path.abspath(p) for p in roots_cfg if isinstance(p, str)}
-        # 并入额外路径
+        # Include extra roots
         for ap, _ in extra_roots:
             all_roots_set.add(ap)
         all_roots: List[str] = sorted(all_roots_set)
 
-        # 生成 root->type 映射（仅对直接为类型目录的根路径设置）
+        # Build root->type mapping (only when the root dir name equals the type name)
         rmap: Dict[str, str] = {}
         for ap, t in extra_roots:
             base = os.path.basename(ap).strip().lower()
-            # 如果该根目录名与类型名一致，认为它是类型目录，建立映射
+            # If the root dir name matches the type, treat it as type directory and map it
             if _normalize_type_name(base) == t:
                 rmap[os.path.normcase(ap)] = t
-        # 注意：默认的 REPO_ROOT/models 不设置映射，仍按一级子目录推断
+        # Note: default REPO_ROOT/models is not mapped; still infer by first-level subdir
 
         return AppConfig(host=host, port=port, model_roots=all_roots, root_type_map=rmap)
 

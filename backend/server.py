@@ -13,7 +13,7 @@ try:
     from .config import AppConfig  # type: ignore
     from . import db  # type: ignore
     from .scanner import Scanner  # type: ignore
-    # 新增：导入拆分后的 HTTP 处理器
+    # New: import the split-out HTTP handler
     from .http_handler import ApiHandler, set_context  # type: ignore
 except Exception:
     # Fallback: load local modules when run as a plain script
@@ -26,7 +26,7 @@ except Exception:
         if spec is None or spec.loader is None:
             raise ImportError(f"cannot load {rel_path}")
         mod = importlib.util.module_from_spec(spec)
-        # 注册到 sys.modules 以便 dataclass 等装饰器获取正确的模块上下文
+        # Register into sys.modules so decorators like dataclass get correct module context
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
         return mod
@@ -34,12 +34,12 @@ except Exception:
     _config = _load_local("hikaze_mm_config", "config.py")
     db = _load_local("hikaze_mm_db", "db.py")
     _scanner_mod = _load_local("hikaze_mm_scanner", "scanner.py")
-    # 新增：本地加载 http_handler
+    # New: locally load http_handler
     _http_handler = _load_local("hikaze_mm_http_handler", "http_handler.py")
 
     AppConfig = _config.AppConfig
     Scanner = _scanner_mod.Scanner
-    # 新增：绑定 http_handler 符号
+    # New: bind http_handler symbols
     ApiHandler = _http_handler.ApiHandler
     set_context = _http_handler.set_context
 
@@ -50,7 +50,7 @@ _scanner: Optional[Scanner] = None
 
 
 def _init_server() -> None:
-    """初始化服务器"""
+    """Initialize server state"""
     global _cfg, _scanner
 
     if _cfg is None:
@@ -59,21 +59,21 @@ def _init_server() -> None:
 
     if _scanner is None:
         db.init_db()
-        # 修复：Scanner 需要传入配置实例
+        # Fix: Scanner requires config instance
         _scanner = Scanner(_cfg)
         print("[Hikaze MM] Scanner initialized")
 
-    # 注入上下文（版本、配置、扫描器）到 ApiHandler
+    # Inject context (version, config, scanner) into ApiHandler
     set_context(_cfg, _scanner, VERSION)
 
 
 def main(host: str = None, port: int = None) -> None:
     """
-    启动HTTP服务主函数
+    Start the HTTP server
 
     Args:
-        host: 服务器绑定地址
-        port: 服务器端口
+        host: Server bind address
+        port: Server port
     """
     global _cfg
 
@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # 如果指定了配置文件，更新全局配置
+    # If a config file is provided, update the global config accordingly
     if args.config and os.path.exists(args.config):
         try:
             with open(args.config, 'r', encoding='utf-8') as f:

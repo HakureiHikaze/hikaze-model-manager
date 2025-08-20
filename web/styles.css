@@ -19,7 +19,7 @@
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
 .card{position:relative;/*min-height:160px;*/aspect-ratio:3/4;border:1px solid #30363d;border-radius:10px;overflow:hidden;background:#11161c;background-size:cover;background-position:center;transition:border-color .15s ease, box-shadow .15s ease}
 .card:hover{border-color:#388bfd}
-/* 绿色高亮：已纳入（picked） */
+/* Green highlight: included (picked) */
 .card.picked{border-color:#2ea043;box-shadow:0 0 0 2px rgba(46,160,67,.35) inset}
 .card.selected{border-color:#1f6feb;box-shadow:0 0 0 2px rgba(31,111,235,.35) inset}
 .card .card-top{position:absolute;top:6px;left:6px;right:6px;display:flex;justify-content:space-between;align-items:center}
@@ -32,7 +32,7 @@
 .list{display:flex;flex-direction:column;gap:8px}
 .row{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #30363d;border-radius:8px;background:#0d1117;transition:border-color .15s ease, box-shadow .15s ease}
 .row:hover{border-color:#388bfd}
-/* 绿色高亮：已纳入（picked） */
+/* Green highlight: included (picked) */
 .row.picked{border-color:#2ea043;box-shadow:0 0 0 2px rgba(46,160,67,.25) inset}
 .row.selected{border-color:#1f6feb;box-shadow:0 0 0 2px rgba(31,111,235,.25) inset}
 .row-name{flex:1;color:#e6edf3;font-weight:600}
@@ -54,10 +54,10 @@
 .actions .secondary{background:#30363d}
 .empty{opacity:.7;padding:12px}
 
-/* 输入聚焦优化 */
+/* Input focus highlight */
 .field input:focus{outline:2px solid #1f6feb;outline-offset:2px}
 
-/* 标签 chips 编辑器 */
+/* Tag chips editor */
 .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:#0f141a;border:1px solid #30363d;border-radius:6px;padding:6px;position:relative}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#21262d;color:#c9d1d9}
 .chip-x{border:none;background:transparent;color:#c9d1d9;cursor:pointer;font-size:14px;line-height:1;opacity:0;transition:opacity .12s ease}
@@ -68,7 +68,7 @@
 .chips-suggest-item{padding:6px 8px;cursor:pointer}
 .chips-suggest-item:hover{background:#1f232a}
 
-/* 参数编辑器 */
+/* Parameter editor */
 .params{display:flex;flex-direction:column;gap:8px;width:100%}
 .param-row{display:flex;gap:6px}
 .param-row input{flex:1}
@@ -78,12 +78,12 @@
 .param-remove{border:none;background:#3a3f46;color:#c9d1d9;border-radius:6px;padding:0 8px;cursor:pointer}
 .param-remove:hover{background:#4a4f56}
 
-/* 通用按钮样式（与现有按钮风格一致） */
+/* Generic button styles (consistent with existing style) */
 .btn{padding:6px 10px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;transition:background .15s ease,transform .05s ease,border-color .15s ease}
 .btn:hover{background:#2a2f36;border-color:#3a3f46}
 .btn:disabled{opacity:.6;cursor:not-allowed}
 
 
-/* 非agent编辑 */
+/* Non-agent edits */
 .detailName{color:#e6edf3 !important;}
 .tagsMode{color:#e6edf3 !important;}

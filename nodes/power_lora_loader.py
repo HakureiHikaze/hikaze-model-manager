@@ -1,9 +1,9 @@
 """
-HikazePowerLoraLoader - 多 LoRA 叠加加载器（可旁路）
-- 输入：optional MODEL/CLIP
-- 输出：MODEL, CLIP
-- 小部件：动态行（lora_N、lora_N_on、lora_N_strength_model、lora_N_strength_clip），以及顶部 bypass
-- 执行：按行顺序对 on=true 的条目叠加 LoRA；无 clip 输入时 clip 强度视为 0；bypass=True 时透传
+HikazePowerLoraLoader - Multiple LoRA stacking loader (with bypass)
+- Inputs: optional MODEL/CLIP
+- Outputs: MODEL, CLIP
+- Widgets: dynamic rows (lora_N, lora_N_on, lora_N_strength_model, lora_N_strength_clip) and top-level bypass
+- Execution: apply LoRA rows in order where on=true; when no CLIP input, clip strength is treated as 0; bypass=True passes through
 """
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ import folder_paths  # type: ignore
 import os
 
 
-# 轻量实现：FlexibleOptionalInputType 与 AnyType（参考 rgthree 实现）
+# Lightweight implementation: FlexibleOptionalInputType and AnyType (inspired by rgthree)
 class _AnyType(str):
-    def __ne__(self, __value: object) -> bool:  # 始终不等，用于放宽类型比较
+    def __ne__(self, __value: object) -> bool:  # always unequal, to relax type comparison
         return False
 
 
@@ -27,12 +27,12 @@ class FlexibleOptionalInputType(dict):
         for k, v in self.data.items():
             self[k] = v
 
-    def __getitem__(self, key):  # 未声明的键一律返回 (self.type,)
+    def __getitem__(self, key):  # return (self.type,) for any undeclared key
         if key in self.data:
             return self.data[key]
         return (self.type,)
 
-    def __contains__(self, key):  # 永远包含任意键
+    def __contains__(self, key):  # always contains any key
         return True
 
 
@@ -42,7 +42,7 @@ _any_type = _AnyType("*")
 class HikazePowerLoraLoader:
     @classmethod
     def INPUT_TYPES(cls):
-        # 使用 FlexibleOptionalInputType 接受任意动态键（包括 lora_* 与 bypass）
+        # Use FlexibleOptionalInputType to accept arbitrary dynamic keys (including lora_* and bypass)
         return {
             "required": {},
             "optional": FlexibleOptionalInputType(type=_any_type, data={
@@ -59,7 +59,7 @@ class HikazePowerLoraLoader:
 
     @staticmethod
     def _collect_rows(kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 将 kwargs 中的 lora_i_* 聚合为行；按 i 排序
+        # Aggregate kwargs lora_i_* into rows; sort by i
         import re
 
         groups: Dict[int, Dict[str, Any]] = {}
@@ -97,32 +97,32 @@ class HikazePowerLoraLoader:
             loras = []
         if not loras:
             return None
-        # 直接匹配
+        # direct match
         if name in loras:
             return name
-        # 去扩展匹配（路径或文件名）
+        # match without extension (path or filename)
         name_noext = os.path.splitext(name)[0]
         loras_noext = [os.path.splitext(x)[0] for x in loras]
         if name_noext in loras_noext:
             return loras[loras_noext.index(name_noext)]
-        # 仅文件名匹配
+        # match by basename
         base = os.path.basename(name)
         loras_base = [os.path.basename(x) for x in loras]
         if base in loras_base:
             return loras[loras_base.index(base)]
-        # 仅文件名（无扩展）匹配
+        # match basename without extension
         base_noext = os.path.splitext(base)[0]
         loras_base_noext = [os.path.splitext(os.path.basename(x))[0] for x in loras]
         if base_noext in loras_base_noext:
             return loras[loras_base_noext.index(base_noext)]
-        # 模糊包含匹配
+        # fuzzy contains
         for i, p in enumerate(loras):
             if name in p:
                 return loras[i]
         return None
 
     def load_loras(self, model=None, clip=None, **kwargs):
-        # 旁路：支持前端注入 bypass 布尔
+        # Bypass: support frontend-injected boolean 'bypass'
         bypass = bool(kwargs.get("bypass", False))
         if bypass:
             return (model, clip)
@@ -141,12 +141,12 @@ class HikazePowerLoraLoader:
             lora_name = self._resolve_lora_name(lora_name_in) or lora_name_in
             sm = row.get("strength_model", 1.0)
             sc = row.get("strength_clip", 1.0)
-            # 无 clip 输入时，clip 强度强制为 0
+            # When no CLIP input, force clip strength to 0
             sc_eff = 0.0 if clip is None else float(sc)
             try:
                 model, clip = loader.load_lora(model, clip, lora_name, float(sm), sc_eff)
             except Exception:
-                # 单条失败时跳过，避免整节点失败
+                # Skip on single-row failure to avoid failing the whole node
                 continue
         return (model, clip)
 

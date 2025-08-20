@@ -9,13 +9,13 @@ from http.server import SimpleHTTPRequestHandler
 from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
-# 运行期上下文，由 server.py 通过 set_context 注入
+# Runtime context, injected by server.py via set_context
 _cfg = None  # type: ignore
 _scanner = None  # type: ignore
 _version: str = "unknown"
 
 try:
-    # 运行在包环境
+    # Running in package environment
     from .utils import (
         json_dumps_bytes as _json_dumps,
         json_loads_bytes as _json_loads,
@@ -27,7 +27,7 @@ try:
     from .handlers import system as h_system, scan as h_scan, tags as h_tags, models as h_models  # type: ignore
     from .permissions import check_permission as _check_permission  # type: ignore
 except Exception:
-    # 作为脚本直接运行时的本地导入回退
+    # Local imports fallback when running as a plain script
     import importlib.util
 
     _BDIR = os.path.dirname(__file__)
@@ -61,23 +61,23 @@ except Exception:
 
 
 def set_context(cfg, scanner, version: str = "unknown") -> None:
-    """由 server.py 注入运行上下文。
+    """Injected by server.py to set runtime context.
 
     Args:
-        cfg: AppConfig 实例
-        scanner: Scanner 实例
-        version: 版本号字符串
+        cfg: AppConfig instance
+        scanner: Scanner instance
+        version: version string
     """
     global _cfg, _scanner, _version
     _cfg = cfg
     _scanner = scanner
     _version = version or "unknown"
-    # 同步到 handler 的 server_version
+    # Sync to handler's server_version
     ApiHandler.server_version = f"HikazeMM/{_version}"
 
 
 class ApiHandler(SimpleHTTPRequestHandler):
-    # 在 set_context 中会被更新
+    # Will be updated in set_context
     server_version = "HikazeMM/unknown"
 
     def _set_headers(self, code: int, content_type: str = "application/json; charset=utf-8"):
@@ -249,24 +249,24 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):  # noqa: N802
         """
-        处理DELETE请求，包含权限验证预留
+        Handle DELETE requests with a reserved hook for permission checks.
         """
         parsed = urlparse(self.path)
         path = parsed.path or "/"
 
-        # 权限验证预留接口
+        # Permission check hook (reserved)
         if not _check_permission("delete", path):
             self._set_headers(403)
             self.wfile.write(_json_dumps({"error": {"code": "PERMISSION_DENIED", "message": "insufficient permissions"}}))
             return
 
-        # 删除标签
+        # Delete a tag
         m = re.match(r"^/tags/(\d+)$", path)
         if m:
             h_tags.delete(self, int(m.group(1)))
             return
 
-        # 删除模型（仅从数据库中移除记录，不删除文件）
+        # Delete a model (remove record from DB only; keep file intact)
         m = re.match(r"^/models/(\d+)$", path)
         if m:
             h_models.delete_model(self, int(m.group(1)))

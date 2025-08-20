@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""通用工具：JSON 编解码与路径计算等"""
+"""General utilities: JSON encode/decode and path helpers"""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,7 @@ def json_loads_bytes(data: bytes) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
-# 计算 checkpoints 相对路径（ckpt_name），以兼容 ComfyUI 官方加载器
+# Compute relative path under checkpoints domain (ckpt_name) to be compatible with ComfyUI official loader
 
 def calc_ckpt_name(abs_path: str) -> Optional[str]:
     try:
@@ -36,13 +36,13 @@ def calc_ckpt_name(abs_path: str) -> Optional[str]:
                     return rel
             except Exception:
                 continue
-        # 未命中任何根：返回文件名做保底
+        # If no root matches, fallback to filename
         return os.path.basename(ap)
     except Exception:
         return None
 
 
-# 计算相对路径的通用函数
+# Generic relative path helper within a given domain
 
 def calc_rel_in_domain(abs_path: str, domain: str) -> Optional[str]:
     try:
@@ -69,4 +69,3 @@ def calc_rel_in_domain(abs_path: str, domain: str) -> Optional[str]:
 def is_checkpoint_type(name: Optional[str]) -> bool:
     n = (name or "").strip().lower()
     return n in ("checkpoint", "checkpoints")
-

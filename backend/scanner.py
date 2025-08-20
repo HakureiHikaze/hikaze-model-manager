@@ -12,7 +12,7 @@ try:
     from . import db  # type: ignore
     from .config import AppConfig  # type: ignore
 except Exception:
-    # fallback for script-run context
+    # Fallback for script-run context
     import importlib.util, sys as _sys
     _BDIR = os.path.dirname(__file__)
 
@@ -52,7 +52,7 @@ KEYWORDS = [
 
 def infer_type(path: str) -> str:
     p = path.replace("\\", "/").lower()
-    # 专规则：models/sams 下的模型归为 other
+    # Special rule: models/sams/* belongs to 'other'
     if "/sams/" in p:
         return "other"
     for t, keys in KEYWORDS:
@@ -99,11 +99,11 @@ class Scanner:
             except Exception:
                 continue
             if common == os.path.normcase(rabs):
-                # 若该根即为类型目录，直接返回映射类型
+                # If the root itself is a typed directory, return mapped type directly
                 mt = rmap.get(os.path.normcase(rabs))
                 if mt:
                     return mt
-                # 否则按一级子目录名推断
+                # Otherwise infer by first-level subdirectory name
                 rel = os.path.relpath(apath, rabs)
                 parts = [p for p in rel.replace('\\','/').split('/') if p and p not in ('.','..')]
                 if parts:
@@ -134,7 +134,7 @@ class Scanner:
             paths = self._cfg.model_roots or []
         # normalize
         paths = [os.path.abspath(p) for p in paths if p and os.path.isdir(p)]
-        # full=True 视为深度刷新：包含哈希重算
+        # full=True indicates deep refresh: includes hash recomputation
         self._thread = threading.Thread(target=self._run, args=(paths, full), daemon=True)
         self._thread.start()
         return True
@@ -144,7 +144,7 @@ class Scanner:
         return True
 
     def refresh_one(self, path: str, compute_hash: bool = False) -> bool:
-        """Public API: 刷新单个文件（索引属性更新；可选重算哈希）。返回是否成功。"""
+        """Public API: refresh a single file (update indexed props; optionally recompute hash). Return success flag."""
         try:
             if not os.path.isfile(path):
                 return False
@@ -156,7 +156,7 @@ class Scanner:
     # core
     def _run(self, roots: List[str], full: bool):
         try:
-            # pre-count files
+            # Pre-count files
             files = list(self._iter_files(roots))
             with self._lock:
                 self._stats.total = len(files)
@@ -164,7 +164,7 @@ class Scanner:
                 if self._stop.is_set():
                     break
                 try:
-                    # full 模式计算哈希；默认不计算
+                    # In full mode compute hashes; default is no hash computation
                     self._process_file(path, compute_hash=full)
                 except Exception:
                     with self._lock:
@@ -186,7 +186,7 @@ class Scanner:
         for root in roots:
             root_abs = os.path.abspath(root)
             for dirpath, dirnames, filenames in os.walk(root_abs, followlinks=True):
-                # 去重：按 realpath 防止链接循环
+                # De-dup: use realpath to prevent link loops
                 try:
                     rp = os.path.realpath(dirpath)
                 except Exception:
@@ -195,7 +195,7 @@ class Scanner:
                     dirnames[:] = []
                     continue
                 visited.add(os.path.normcase(rp))
-                # 过滤将要递归的子目录：仅去重（不限制是否跳出根，以支持 junction）
+                # Filter subdirs to traverse: only de-dup (do not constrain leaving the root to support junctions)
                 kept = []
                 for d in list(dirnames):
                     p = os.path.join(dirpath, d)
@@ -223,9 +223,9 @@ class Scanner:
         st = os.stat(path)
         name = os.path.basename(path)
         size_bytes = int(st.st_size)
-        # 新分类：优先基于根映射或 models 根的一级子目录
+        # New classification: first try root mapping or first-level dir under models root
         type_ = self._infer_type_by_roots(path)
-        # 懒计算：默认不计算哈希；尽量复用已有值
+        # Lazy: do not compute hash by default; reuse existing when possible
         hash_hex = ""
         if compute_hash:
             hash_hex = self._sha256_file(path)

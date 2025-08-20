@@ -1,0 +1,93 @@
+{
+  "mm.title.manager": "🎨 模型管理器",
+  "mm.title.selectorCheckpoint": "🧪 选择检查点模型",
+  "mm.title.selectorLora": "🧪 选择 LoRA 模型",
+  "mm.title.selectorGeneric": "🧪 选择模型",
+
+  "mm.search.placeholder": "搜索模型名/路径…",
+  "mm.tags.filter": "标签筛选 ▾",
+  "mm.tags.mode.all": "全包含",
+  "mm.tags.mode.any": "任一包含",
+  "mm.refresh": "刷新数据库",
+
+  "mm.view.card": "卡片",
+  "mm.view.list": "列表",
+  "mm.bulk.delete": "批量删除（占位）",
+  "mm.bulk.move": "批量移动（占位）",
+
+  "mm.detail.none": "未选择",
+  "mm.btn.revert": "放弃编辑",
+  "mm.btn.save": "保存",
+  "mm.btn.confirm": "确认",
+  "mm.btn.remove": "移除",
+  "mm.btn.upload": "上传",
+  "mm.btn.close": "关闭",
+  "mm.btn.read": "读取",
+  "mm.btn.chooseModelEllipsis": "选择模型…",
+  "mm.common.open": "打开",
+  "mm.common.loading": "加载中…",
+  "mm.common.uploading": "上传中…",
+  "mm.common.computing": "计算中…",
+  "mm.saved": "已保存",
+
+  "mm.empty": "无结果",
+
+  "mm.sha.label": "SHA256",
+  "mm.sha.compute": "计算",
+  "mm.sha.recompute": "重算",
+  "mm.sha.confirmCompute": "将计算该文件的 SHA256，可能较慢，是否继续？",
+  "mm.confirm.noAsk": "是否不再询问？",
+  "mm.sha.computeFail": "计算失败: ",
+
+  "mm.community.label": "社区链接",
+  "mm.community.placeholder": "输入链接（Civitai/HF 等）",
+
+  "mm.tags.empty": "暂无可筛选标签",
+  "mm.tags.inputPlaceholder": "输入标签，空格/逗号/回车添加",
+  "mm.tags.remove": "移除",
+
+  "mm.image.sample": "示例图片",
+  "mm.upload.fail": "上传失败: ",
+
+  "mm.detail.type": "类型",
+  "mm.detail.filename": "文件名",
+  "mm.detail.path": "路径",
+  "mm.detail.size": "大小",
+  "mm.detail.createdAt": "添加时间",
+  "mm.detail.descriptionLabel": "描述",
+  "mm.detail.descriptionPlaceholder": "模型描述",
+  "mm.detail.tags": "标签",
+  "mm.detail.prompts": "Prompts",
+
+  "mm.prompts.positive": "正向提示词",
+  "mm.prompts.negative": "反向提示词",
+
+  "mm.save.fail": "保存失败: ",
+  "mm.scan.starting": "启动中…",
+  "mm.scan.started": "已启动",
+  "mm.scan.startFail": "启动扫描失败: ",
+
+  "mm.selector.needLora": "请至少选择一个 LoRA",
+  "mm.selector.none": "未选择模型",
+  "mm.selector.invalid": "无有效选择",
+  "mm.init.fail": "初始化失败: ",
+
+  "mm.lora.model": "model",
+  "mm.lora.clip": "CLIP",
+
+  "mm.units.B": "B",
+  "mm.units.KB": "KB",
+  "mm.units.MB": "MB",
+  "mm.units.GB": "GB",
+  "mm.units.TB": "TB",
+
+  "mm.menu.button": "🎨 模型管理器",
+  "mm.error.backendNotReady": "⚠️ 后端未就绪",
+  "mm.error.loadFail": "⚠️ 无法加载",
+  "mm.error.openManager": "打开模型管理器时发生错误: ",
+
+  "mm.settings": "设置",
+  "mm.settings.category": "Hikaze 模型管理器",
+  "mm.settings.lang.name": "语言",
+  "mm.settings.lang.system": "跟随系统"
+}

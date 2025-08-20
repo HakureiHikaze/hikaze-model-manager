@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hikaze Model Manager</title>
+  <title data-i18n="mm.title.manager">mm.title.manager</title>
   <link rel="stylesheet" href="/web/styles.css">
 </head>
 <body>
@@ -11,40 +11,38 @@
     <header class="toolbar">
       <nav class="type-tabs" id="typeTabs"></nav>
       <div class="search-row">
-        <input id="searchInput" type="text" placeholder="搜索模型名/路径…" />
+        <input id="searchInput" type="text" data-i18n-attr="placeholder:mm.search.placeholder" placeholder="mm.search.placeholder" />
         <div class="tag-filter">
-          <button id="tagDropdownBtn" class="btn">标签筛选 ▾</button>
+          <button id="tagDropdownBtn" class="btn" data-i18n="mm.tags.filter">mm.tags.filter</button>
           <div id="tagDropdown" class="dropdown hidden"></div>
         </div>
-        <div class="mode-toggle">
-          <label><input type="radio" name="tagsMode" value="all" checked> 全包含</label>
-          <label><input type="radio" name="tagsMode" value="any"> 任一包含</label>
-        </div>
-        <button id="refreshBtn" class="btn">刷新数据库</button>
+        <button id="refreshBtn" class="btn" data-i18n="mm.refresh">mm.refresh</button>
+        <button id="settingsBtn" class="btn" data-i18n="mm.settings">mm.settings</button>
+        <button id="closeBtn" class="btn" data-i18n="mm.btn.close">mm.btn.close</button>
       </div>
     </header>
 
     <main class="content">
       <section class="model-list">
         <div class="view-switch">
-          <button id="cardViewBtn" class="active">卡片</button>
-          <button id="listViewBtn">列表</button>
+          <button id="cardViewBtn" class="active" data-i18n="mm.view.card">mm.view.card</button>
+          <button id="listViewBtn" data-i18n="mm.view.list">mm.view.list</button>
         </div>
         <div id="modelsContainer" class="cards"></div>
         <footer class="bulk-actions">
-          <button disabled>批量删除（占位）</button>
-          <button disabled>批量移动（占位）</button>
+          <button disabled data-i18n="mm.bulk.delete">mm.bulk.delete</button>
+          <button disabled data-i18n="mm.bulk.move">mm.bulk.move</button>
         </footer>
       </section>
 
       <aside class="model-detail" id="modelDetail">
         <div class="preview" id="detailImage"></div>
-        <h3 id="detailName">未选择</h3>
+        <h3 id="detailName" data-i18n="mm.detail.none">mm.detail.none</h3>
         <div class="fields" id="detailFields"></div>
         <div class="actions">
-          <button id="revertBtn">放弃编辑</button>
-          <button id="saveBtn">保存</button>
-          <button id="confirmBtn" style="display:none">确认</button>
+          <button id="revertBtn" data-i18n="mm.btn.revert">mm.btn.revert</button>
+          <button id="saveBtn" data-i18n="mm.btn.save">mm.btn.save</button>
+          <button id="confirmBtn" style="display:none" data-i18n="mm.btn.confirm">mm.btn.confirm</button>
         </div>
       </aside>
     </main>
