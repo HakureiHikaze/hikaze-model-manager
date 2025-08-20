@@ -1,242 +1,143 @@
 """
-HikazePowerLoraLoader - Multi-LoRA loader that mirrors ComfyUI's LoraLoader behavior
-but supports multiple LoRAs in a single node. Frontend injects dynamic inputs as
-lora_0, lora_0_on, lora_0_strength_model, lora_0_strength_clip, lora_1, ... etc.
-
-Contract:
-- Inputs (required): MODEL, CLIP
-- Inputs (optional): up to MAX_LORAS groups named as above
-- Behavior: apply LoRAs in ascending index order, skipping disabled or zero-strength ones.
-- Outputs: patched MODEL, patched CLIP
-
-Notes:
-- All comments and docs are in English for open source policy compliance.
-- The frontend normalizes the LoRA "key" to a relative name under the loras folder.
-- We resolve actual file path via folder_paths.get_full_path_or_raise("loras", name).
+HikazePowerLoraLoader - Multiple LoRA stacking loader (with bypass)
+- Inputs: optional MODEL/CLIP
+- Outputs: MODEL, CLIP
+- Widgets: dynamic rows (lora_N, lora_N_on, lora_N_strength_model, lora_N_strength_clip) and top-level bypass
+- Execution: apply LoRA rows in order where on=true; when no CLIP input, clip strength is treated as 0; bypass=True passes through
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple, Any
+from typing import Any, Dict, List
 
+from nodes import LoraLoader  # type: ignore
 import folder_paths  # type: ignore
-import comfy.utils  # type: ignore
-import comfy.sd  # type: ignore
-import numbers
-import json
+import os
+
+
+# Lightweight implementation: FlexibleOptionalInputType and AnyType (inspired by rgthree)
+class _AnyType(str):
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+
+class FlexibleOptionalInputType(dict):
+    def __contains__(self, item):
+        return True
+
+    def __getitem__(self, item):
+        return (_AnyType("*"), {"default": None})
+
+
+_any_type = _AnyType("*")
 
 
 class HikazePowerLoraLoader:
-    # Upper bound of simultaneously-declared optional inputs.
-    # The frontend can create any number of widgets; declaring a generous
-    # maximum on the backend keeps graph validation simple.
-    MAX_LORAS = 16
-
-    def __init__(self) -> None:
-        # Simple cache: path -> loaded state dict, to avoid reloading repeatedly
-        self._lora_cache: Dict[str, Any] = {}
-
     @classmethod
-    def INPUT_TYPES(cls):  # noqa: N802 (ComfyUI convention)
-        # Build optional inputs for many LoRA slots.
-        optional: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
-        for i in range(int(cls.MAX_LORAS)):  # type: ignore[call-overload]
-            # Name as free string; frontend supplies normalized relative path
-            optional[f"lora_{i}"] = (
-                "STRING",
-                {
-                    "multiline": False,
-                    "tooltip": f"LoRA file (relative under 'loras') for slot {i}",
-                },
-            )
-            # On/off switch
-            optional[f"lora_{i}_on"] = (
-                "BOOLEAN",
-                {"default": True, "tooltip": f"Enable LoRA slot {i}"},
-            )
-            # Strengths
-            optional[f"lora_{i}_strength_model"] = (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.01,
-                    "tooltip": f"Model strength for slot {i}",
-                },
-            )
-            optional[f"lora_{i}_strength_clip"] = (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.01,
-                    "tooltip": f"CLIP strength for slot {i}",
-                },
-            )
-
+    def INPUT_TYPES(cls):
         return {
-            "required": {
-                "model": ("MODEL", {"tooltip": "The diffusion model to patch."}),
-                "clip": ("CLIP", {"tooltip": "The CLIP model to patch."}),
-            },
-            "optional": optional,
+            "required": {},
+            "optional": FlexibleOptionalInputType(),
+            "hidden": {},
         }
 
     RETURN_TYPES = ("MODEL", "CLIP")
-    OUTPUT_TOOLTIPS = (
-        "The modified diffusion model.",
-        "The modified CLIP model.",
-    )
-    FUNCTION = "apply_loras"
-
+    RETURN_NAMES = ("MODEL", "CLIP")
+    FUNCTION = "load_loras"
     CATEGORY = "hikaze/loaders"
-    DESCRIPTION = (
-        "Apply multiple LoRAs to MODEL and CLIP in one node. Order matters: lower indices are applied first."
-    )
+    DESCRIPTION = "批量加载多条 LoRA；支持旁路，行序叠加；无 CLIP 输入时 clip 强度自动为 0"
 
-    # --- helpers ---
-    def _resolve_lora_path(self, name: str) -> str:
-        """Resolve a LoRA relative name to its absolute file path.
-        Accepts subfolder paths like "subdir/file.safetensors".
-        Tries direct resolve first; if it fails, tries case-insensitive mapping.
-        """
-        try:
-            return folder_paths.get_full_path_or_raise("loras", name)
-        except Exception:
-            # Fallback: case-insensitive search over known lora filenames
-            try:
-                target_norm = str(name).replace("\\", "/").strip().lower()
-                if not target_norm:
-                    raise
-                all_names = folder_paths.get_filename_list("loras")
-                match_actual = None
-                for n in all_names:
-                    n_norm = str(n).replace("\\", "/").strip().lower()
-                    if n_norm == target_norm:
-                        match_actual = n
-                        break
-                if match_actual is None:
-                    # Try basename-only match as last resort
-                    import os
-                    target_base = os.path.basename(target_norm)
-                    for n in all_names:
-                        if os.path.basename(str(n)).lower() == target_base:
-                            match_actual = n
-                            break
-                if match_actual is None:
-                    raise FileNotFoundError(f"LoRA not found: {name}")
-                return folder_paths.get_full_path_or_raise("loras", match_actual)
-            except Exception:
-                # Re-raise original error context
-                return folder_paths.get_full_path_or_raise("loras", name)
-
-    def _load_lora(self, path: str) -> Any:
-        """Load LoRA state dict with a tiny cache."""
-        obj = self._lora_cache.get(path)
-        if obj is None:
-            obj = comfy.utils.load_torch_file(path, safe_load=True)
-            self._lora_cache[path] = obj
-        return obj
-
-    # --- utilities ---
     @staticmethod
-    def _to_float(val: Any, default: float = 1.0) -> float:
-        try:
-            if isinstance(val, numbers.Real):
-                return float(val)
-            # fallback: try string conversion
-            return float(str(val))
-        except Exception:
-            return default
+    def _collect_rows(kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # Aggregate kwargs lora_i_* into rows; sort by i
+        import re
 
-    def _parse_slot(self, idx: int, kwargs: Dict[str, Any]) -> Tuple[str | None, bool, float, float]:
-        """Parse one LoRA slot from kwargs.
-        Supports multiple formats:
-        - New UI: lora_{i} is a dict or JSON string with keys {key, sm, sc, label}
-        - Old UI: lora_{i} (string), lora_{i}_on (bool), lora_{i}_strength_model (float), lora_{i}_strength_clip (float)
-        Returns: (key or None, enabled, sm, sc)
-        """
-        raw = kwargs.get(f"lora_{idx}")
-        enabled = True
-        sm = self._to_float(kwargs.get(f"lora_{idx}_strength_model", 1.0), 1.0)
-        sc = self._to_float(kwargs.get(f"lora_{idx}_strength_clip", 1.0), 1.0)
-        if f"lora_{idx}_on" in kwargs:
+        groups: Dict[int, Dict[str, Any]] = {}
+        pat = re.compile(r"^lora_(\d+)(?:_(on|strength_model|strength_clip))?$")
+        for k, v in kwargs.items():
+            m = pat.match(str(k))
+            if not m:
+                continue
+            idx = int(m.group(1))
+            sub = m.group(2)
+            row = groups.setdefault(idx, {"idx": idx, "lora": None, "on": True, "strength_model": 1.0, "strength_clip": 1.0})
+            if sub is None:
+                row["lora"] = v
+            elif sub == "on":
+                row["on"] = bool(v)
+            elif sub == "strength_model":
+                try:
+                    row["strength_model"] = float(v)
+                except Exception:
+                    pass
+            elif sub == "strength_clip":
+                try:
+                    row["strength_clip"] = float(v)
+                except Exception:
+                    pass
+        rows = list(groups.values())
+        rows.sort(key=lambda r: r.get("idx", 0))
+        return rows
+
+    @staticmethod
+    def _resolve_lora_name(name: str) -> str | None:
+        try:
+            loras = folder_paths.get_filename_list('loras')
+        except Exception:
+            loras = []
+        if not loras:
+            return None
+        # direct match
+        if name in loras:
+            return name
+        # match without extension (path or filename)
+        name_noext = os.path.splitext(name)[0]
+        loras_noext = [os.path.splitext(x)[0] for x in loras]
+        if name_noext in loras_noext:
+            return loras[loras_noext.index(name_noext)]
+        # match by basename
+        base = os.path.basename(name)
+        loras_base = [os.path.basename(x) for x in loras]
+        if base in loras_base:
+            return loras[loras_base.index(base)]
+        # match basename without extension
+        base_noext = os.path.splitext(base)[0]
+        loras_base_noext = [os.path.splitext(os.path.basename(x))[0] for x in loras]
+        if base_noext in loras_base_noext:
+            return loras[loras_base_noext.index(base_noext)]
+        # fuzzy contains
+        for i, p in enumerate(loras):
+            if name in p:
+                return loras[i]
+        return None
+
+    def load_loras(self, model=None, clip=None, **kwargs):
+        # Bypass: support frontend-injected boolean 'bypass'
+        bypass = bool(kwargs.get("bypass", False))
+        if bypass:
+            return (model, clip)
+
+        rows = self._collect_rows(kwargs)
+        if not rows:
+            return (model, clip)
+
+        loader = LoraLoader()
+        for row in rows:
+            if not row.get("on", True):
+                continue
+            lora_name_in = row.get("lora")
+            if not lora_name_in or not isinstance(lora_name_in, str):
+                continue
+            lora_name = self._resolve_lora_name(lora_name_in) or lora_name_in
+            sm = row.get("strength_model", 1.0)
+            sc = row.get("strength_clip", 1.0)
+            # When no CLIP input, force clip strength to 0
+            sc_eff = 0.0 if clip is None else float(sc)
             try:
-                enabled = bool(kwargs.get(f"lora_{idx}_on", True))
+                model, clip = loader.load_lora(model, clip, lora_name, float(sm), sc_eff)
             except Exception:
-                enabled = True
-
-        # If raw is a mapping from the new widget
-        try:
-            if isinstance(raw, dict):
-                key = str(raw.get("key") or "").strip()
-                # Prefer strengths from the object if provided
-                sm = self._to_float(raw.get("sm", sm), sm)
-                sc = self._to_float(raw.get("sc", sc), sc)
-                # Support optional on flag in object (future-proof)
-                if "on" in raw:
-                    try:
-                        enabled = bool(raw.get("on"))
-                    except Exception:
-                        pass
-                return (key or None, enabled, sm, sc)
-        except Exception:
-            pass
-
-        # If raw is a JSON string from the new widget
-        try:
-            if isinstance(raw, str) and raw.strip().startswith("{"):
-                obj = json.loads(raw)
-                if isinstance(obj, dict):
-                    key = str(obj.get("key") or "").strip()
-                    sm = self._to_float(obj.get("sm", sm), sm)
-                    sc = self._to_float(obj.get("sc", sc), sc)
-                    if "on" in obj:
-                        try:
-                            enabled = bool(obj.get("on"))
-                        except Exception:
-                            pass
-                    return (key or None, enabled, sm, sc)
-        except Exception:
-            # fallthrough to treat as plain string
-            pass
-
-        # Old behavior: raw is the string key
-        try:
-            key = str(raw).strip() if raw is not None else ""
-        except Exception:
-            key = ""
-        if not key:
-            return (None, enabled, sm, sc)
-        return (key, enabled, sm, sc)
-
-    # --- main function ---
-    def apply_loras(self, model, clip, **kwargs):  # type: ignore[override]
-        """Apply enabled LoRAs in ascending slot order.
-        Inputs come both from declared optional inputs and potential future dynamic ones
-        (the frontend ensures matching names).
-        """
-        patched_model = model
-        patched_clip = clip
-
-        for i in range(int(self.MAX_LORAS)):  # type: ignore[call-overload]
-            key_str, enabled, sm, sc = self._parse_slot(i, kwargs)
-            if not key_str:
+                # Skip on single-row failure to avoid failing the whole node
                 continue
-            if key_str.lower() in {"none", "null", ""}:
-                continue
-            if (not enabled) or (sm == 0.0 and sc == 0.0):
-                continue
-
-            # Resolve and apply
-            lora_path = self._resolve_lora_path(key_str)
-            lora_obj = self._load_lora(lora_path)
-            patched_model, patched_clip = comfy.sd.load_lora_for_models(
-                patched_model, patched_clip, lora_obj, sm, sc
-            )
-
-        return (patched_model, patched_clip)
+        return (model, clip)
 
 
 NODE_CLASS_MAPPINGS = {
