@@ -108,11 +108,11 @@ function ensureGroup(node, idx, item){
     node.widgets_per_row = 3;
     // model name
     if (!g.nameWidget){
-        const w = node.addWidget && node.addWidget('text', nameLora, (item && item.label) || (item && item.key) || '', ()=>{}, { serialize: true });
+        const w = node.addWidget && node.addWidget('text', nameLora, (item && item.value) || (item && item.key) || '', ()=>{}, { serialize: true });
         // Do not set w.label here, the first widget in a row is special and its label is not displayed.
         // Its value is the LoRA name itself.
-    } else if (item && (item.label || item.key)){
-        try{ g.nameWidget.value = item.label || item.key; }catch(_){ }
+    } else if (item && (item.value || item.key)){
+        try{ g.nameWidget.value = item.value || item.key; }catch(_){ }
     }
     // model
     if (!g.smWidget){
@@ -419,7 +419,7 @@ function enhancePowerLoraLoaderNode(node){
                     });
                     let idx = 0;
                     for (const it of (Array.isArray(arr)? arr: [])){
-                        const item = { key: normalizeLoraKey(it.key||it.value||''), label: String(it.label||it.value||it.key||''), sm: Number(it.sm)||1.0, sc: Number(it.sc)||1.0 };
+                        const item = { key: normalizeLoraKey(it.key||it.value||''), value: String(it.value||it.key||''), label: String(it.label||it.value||it.key||''), sm: Number(it.sm)||1.0, sc: Number(it.sc)||1.0 };
                         ensureGroup(node, idx++, item);
                     }
                 }catch(_){ /* ignore */ }
@@ -427,7 +427,7 @@ function enhancePowerLoraLoaderNode(node){
         }catch(_){ }
         // If still no groups exist, create an empty one
         const groups = collectLoraGroups(node);
-        if (!groups.size){ ensureGroup(node, 0, { key:'', label:'', sm:1.0, sc:1.0 }); }
+        if (!groups.size){ ensureGroup(node, 0, { key:'', value:'', label:'', sm:1.0, sc:1.0 }); }
         // Selection entry button
         const btn = node.addWidget && node.addWidget('button', 'choose_models', t('mm.btn.chooseModelEllipsis'), () => {
             const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -522,7 +522,13 @@ function setupMessageListener(){
             const { node, wName, wPath, overlay, mode } = ctx;
             if (payload && (payload.kind === 'lora' || payload.kind === 'loras') && Array.isArray(payload.items) && node && node.comfyClass === 'HikazePowerLoraLoader'){
                 const opMode = (payload.mode === 'append' || mode === 'append') ? 'append' : 'replace';
-                const incoming = (payload.items || []).map(it=>({ key: normalizeLoraKey(it && (it.value || it.label || '')), label: String((it && (it.label || it.value)) || ''), sm: (typeof it.sm==='number'? it.sm: 1.0), sc: (typeof it.sc==='number'? it.sc: 1.0) })).filter(it=>it.key);
+                const incoming = (payload.items || []).map(it=>({ 
+                    key: normalizeLoraKey(it && (it.value || it.label || '')), 
+                    value: String((it && it.value) || ''), 
+                    label: String((it && (it.label || it.value)) || ''), 
+                    sm: (typeof it.sm==='number'? it.sm: 1.0), 
+                    sc: (typeof it.sc==='number'? it.sc: 1.0) 
+                })).filter(it=>it.key);
                 if (opMode === 'replace') clearAllGroups(node);
                 let idx = 0;
                 if (opMode === 'append'){

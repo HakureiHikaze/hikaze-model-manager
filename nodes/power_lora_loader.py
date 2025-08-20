@@ -145,8 +145,9 @@ class HikazePowerLoraLoader:
             sc_eff = 0.0 if clip is None else float(sc)
             try:
                 model, clip = loader.load_lora(model, clip, lora_name, float(sm), sc_eff)
-            except Exception:
-                # Skip on single-row failure to avoid failing the whole node
+            except Exception as e:
+                # Log error for debugging, but continue processing other LoRAs
+                print(f"[HikazePowerLoraLoader] Failed to load LoRA '{lora_name}': {e}")
                 continue
         return (model, clip)
 
