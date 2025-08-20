@@ -1,5 +1,6 @@
 'use strict';
 
+// Archived original of /web/selector-checkpoint.js
 (function(){
   try { if (typeof window !== 'undefined' && window.top === window) { console.debug('[HikazeMM] selector-checkpoint.js top window, skip'); return; } } catch(_){ }
 
@@ -29,7 +30,7 @@
     refreshBtn: document.getElementById('refreshBtn'),
   };
 
-  function bind(t,e,h){ if(!t) return; try{ t.addEventListener(e,h); }catch(_){}}
+  function bind(t,e,h){ if(!t) return; try{ t.addEventListener(e,h); }catch(_){} }
   const qsa=(s,r=document)=>Array.from(r.querySelectorAll(s));
   const h=(tag,props={},...children)=>{ const e=document.createElement(tag); Object.entries(props||{}).forEach(([k,v])=>{ if(k==='class') e.className=v; else if(k==='dataset') Object.assign(e.dataset,v); else if(k.startsWith('on')&&typeof v==='function') e.addEventListener(k.slice(2),v); else if(k==='style'&&typeof v==='object') Object.assign(e.style,v); else if(v!==undefined&&v!==null) e.setAttribute(k,v); }); children.flat().forEach(c=>{ if(c==null) return; if(typeof c==='string') e.appendChild(document.createTextNode(c)); else e.appendChild(c); }); return e; };
   function formatMs(ms){ const n=Number(ms); if(!isFinite(n)||n<=0) return '—'; try{ return new Date(n).toLocaleString(); }catch(_){ return String(ms);} }
@@ -130,7 +131,7 @@
     el.detailFields.innerHTML='';
     el.detailFields.append(
       ro('类型', m.type),
-      ro('文件名', m.name || (m.path? m.path.split(/[\/\\]/).pop(): '—')),
+      ro('文件名', m.name || (m.path? m.path.split(/[\\\/]/).pop(): '—')),
       ro('路径', m.path),
       ro('大小', formatSize(m.size_bytes)),
       ro('添加时间', formatMs(m.created_at))
@@ -161,7 +162,7 @@
     bind(el.tagDropdownBtn,'click',()=>{ if(el.tagDropdown) el.tagDropdown.classList.toggle('hidden'); });
     document.addEventListener('click',(e)=>{ try{ if(el.tagDropdown && !el.tagDropdown.contains(e.target) && e.target!==el.tagDropdownBtn) el.tagDropdown.classList.add('hidden'); }catch(_){ } });
     bind(el.searchInput,'input', debounce(()=>{ state.q=(el.searchInput && el.searchInput.value || '').trim(); updateAll(); },300));
-    bind(el.refreshBtn,'click', async()=>{ try{ if(!el.refreshBtn) return; el.refreshBtn.disabled=true; const old=el.refreshBtn.textContent; el.refreshBtn.textContent='启动中…'; await fetch('/scan/start',{method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({full:false})}); el.refreshBtn.textContent='已启动'; setTimeout(()=>{ if(!el.refreshBtn) return; el.refreshBtn.textContent=old; el.refreshBtn.disabled=false; updateAll(); },1000); }catch(err){ if(el.refreshBtn) el.refreshBtn.disabled=false; alert('���动扫描失败: '+err.message); } });
+    bind(el.refreshBtn,'click', async()=>{ try{ if(!el.refreshBtn) return; el.refreshBtn.disabled=true; const old=el.refreshBtn.textContent; el.refreshBtn.textContent='启动中…'; await fetch('/scan/start',{method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({full:false})}); el.refreshBtn.textContent='已启动'; setTimeout(()=>{ if(!el.refreshBtn) return; el.refreshBtn.textContent=old; el.refreshBtn.disabled=false; updateAll(); },1000); }catch(err){ if(el.refreshBtn) el.refreshBtn.disabled=false; alert('启动扫描失败: '+err.message); } });
     if(el.confirmBtn){ bind(el.confirmBtn,'click',()=> sendSelection()); document.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendSelection(); } }); }
   }
 

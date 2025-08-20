@@ -1,3 +1,4 @@
+// Archived copy: original /web/selector-lora.js
 'use strict';
 
 (function(){
@@ -143,7 +144,7 @@
     el.detailFields.innerHTML='';
     el.detailFields.append(
       ro('类型', m.type),
-      ro('文件名', m.name || (m.path? m.path.split(/[\/\\]/).pop(): '—')),
+      ro('文件名', m.name || (m.path? m.path.split(/[\\\/]/).pop(): '—')),
       ro('路径', m.path),
       ro('大小', formatSize(m.size_bytes)),
       ro('添加时间', formatMs(m.created_at))
@@ -158,7 +159,7 @@
     const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
     if(!picked.length){ alert('请至少选择一个 LoRA'); return; }
     const items = picked.map(m=>{
-      const base = (m.path ? (m.path.split(/[\\/]/).pop()||'') : (m.name||''));
+      const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
       const value = (m && m.lora_name) ? m.lora_name : base;
       const label = (m && (m.name || base)) || String(value);
       return { value, label };

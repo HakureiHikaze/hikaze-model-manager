@@ -1,3 +1,6 @@
+// Archived copy: this file was moved from /web/manager.js
+// Reason: HTML pages load app.js; this file is currently unused.
+
 'use strict';
 
 (function(){

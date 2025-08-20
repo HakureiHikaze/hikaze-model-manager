@@ -68,6 +68,7 @@
       requestId: selectorRequestId,
       selectedIds: new Set(), // 多选已选 id 集
       preKeys: preselectedKeys, // 新增：预选 identity keys
+      strengths: new Map(), // 新增：id -> { sm, sc }
     }
   };
 
@@ -222,7 +223,8 @@
     if (state.selector.on && state.selector.kind) {
       const want = normalizeTypeName(state.selector.kind);
       const found = rows.find(x=> normalizeTypeName(x && x.name) === want || String(x && x.name).toLowerCase() === (want+'s'));
-      if (found) state.currentType = found.name; else state.currentType = state.currentType || want;
+      // 修改：若未在 /types 中找到，也强制为 want，避免回落到 checkpoint
+      state.currentType = found ? found.name : want;
     }
     renderTypeTabs();
   }
@@ -303,12 +305,13 @@
     const data = await api(url.pathname + '?' + url.searchParams.toString());
     state.models = data.items || [];
     state.total = data.total || 0;
-    // 新增：将预选 keys 映射到当前批次 items 的 id 集合
+    // 新增：将预选 keys 映射到当前批次 items 的 id 集合，并初始化默认强度
     if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
       for (const m of state.models){
         const key = identityForModel(m);
         if (key && state.selector.preKeys.has(key)){
           state.selector.selectedIds.add(m.id);
+          if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
         }
       }
     }
@@ -380,20 +383,59 @@
       el.modelsContainer.appendChild(h('div', {class:'empty'}, '无结果'));
       return;
     }
+    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
+    const stop = (e)=>{ try{ e.stopPropagation(); }catch(_){} };
+    const includeModel = (m)=>{ if (!state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.add(m.id); if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 }); } };
+    const removeModel = (m)=>{ if (state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.delete(m.id); state.selector.strengths.delete(m.id); } };
+    const createStrengthControls = (m)=>{
+      const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
+      const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
+      const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
+      const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'model');
+      const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
+      const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, 'CLIP');
+      const sc = num('sc', s.sc, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sc=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
+      wrap.append(smLab, sm, scLab, sc);
+      return wrap;
+    };
     state.models.forEach(m=>{
       const tags = (m.tags||[]).filter(t=>t!==m.type);
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
-      const multiPick = state.selector.on && (String(state.selector.kind||'').toLowerCase() === 'lora' || String(state.selector.kind||'').toLowerCase() === 'loras');
-      const picked = multiPick && state.selector.selectedIds.has(m.id);
-      const pickBox = multiPick ? h('input', {type:'checkbox', checked: picked? '': null, onclick:(e)=>{ e.stopPropagation(); if (state.selector.selectedIds.has(m.id)) state.selector.selectedIds.delete(m.id); else state.selector.selectedIds.add(m.id); updateActionsState(); if (state.viewMode==='cards'){ renderModels(); } else { e.currentTarget.closest('.row')?.classList.toggle('picked', state.selector.selectedIds.has(m.id)); } }}) : null;
+      const picked = isLoraSelector && state.selector.selectedIds.has(m.id);
       if (state.viewMode === 'cards'){
-        const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
+        const card = h('div', {class:'card' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>{
+          if (isLoraSelector){
+            // 点击卡片：纳入并聚焦（不取消）
+            includeModel(m);
+            state.selectedModel = JSON.parse(JSON.stringify(m));
+            state.originalDetail = JSON.parse(JSON.stringify(m));
+            updateActionsState();
+            renderDetail();
+            renderModels();
+          } else {
+            selectModel(m);
+          }
+        }});
         const badge = h('span', {class:'badge'}, m.type);
-        const top = h('div', {class:'card-top'}, [badge]);
-        if (pickBox){ top.appendChild(h('span', {style:{marginLeft:'auto'}}, pickBox)); }
+        const topChildren = [badge];
+        // 复选框：仅用于取消（也支持重新勾选纳入）
+        if (isLoraSelector){
+          const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
+            stop(e);
+            const on = e.currentTarget && e.currentTarget.checked;
+            if (on) includeModel(m); else removeModel(m);
+            updateActionsState();
+            // 如果刚取消且是当前蓝色高亮，可保持右侧信息不变，符合“最近选择”逻辑
+            renderModels();
+          }});
+          topChildren.push(h('span', {style:{marginLeft:'auto'}}, chk));
+        }
+        const top = h('div', {class:'card-top'}, topChildren);
         const bg = h('div', {class:'bg'});
         const name = h('div', {class:'name'}, m.name || m.path);
-        const tagRow = h('div', {class:'tags'}, tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)));
+        const tagRowChildren = tags.map(t=>h('span', {class: 'tag' + (state.selectedTags.has(t)?' highlight':'')}, t));
+        if (isLoraSelector && picked) tagRowChildren.push(createStrengthControls(m));
+        const tagRow = h('div', {class:'tags', style:{display:'flex', gap:'6px', flexWrap:'wrap'}}, tagRowChildren);
         card.append(top, bg, name, tagRow);
         if (m.images && m.images.length){
           card.style.backgroundImage = `url(${m.images[0]})`;
@@ -402,12 +444,39 @@
         }
         el.modelsContainer.appendChild(card);
       } else {
-        const row = h('div', {class:'row' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>selectModel(m)});
-        if (pickBox) row.appendChild(h('span', {class:'row-pick'}, pickBox));
+        const row = h('div', {class:'row' + (isSel?' selected':'') + (picked?' picked':''), onclick:()=>{
+          if (isLoraSelector){
+            includeModel(m);
+            state.selectedModel = JSON.parse(JSON.stringify(m));
+            state.originalDetail = JSON.parse(JSON.stringify(m));
+            updateActionsState();
+            renderDetail();
+            renderModels();
+          } else {
+            selectModel(m);
+          }
+        }});
+        // 复选框列
+        if (isLoraSelector){
+          const chk = h('input', {type:'checkbox', checked: picked? '' : null, onclick:(e)=>{
+            stop(e);
+            const on = e.currentTarget && e.currentTarget.checked;
+            if (on) includeModel(m); else removeModel(m);
+            updateActionsState();
+            row.classList.toggle('picked', !!on);
+            // 列表模式避免整页重绘，仅更新当前行的强度区域
+            const old = row.querySelector('.lora-strengths'); if (old) old.remove();
+            if (on){ row.appendChild(createStrengthControls(m)); }
+          }});
+          row.appendChild(h('span', {class:'row-pick'}, chk));
+        }
         row.append(
           h('span', {class:'row-name'}, m.name || m.path),
           h('span', {class:'row-tags'}, tags.map(t=>h('span', {class:'tag' + (state.selectedTags.has(t)?' highlight':'')}, t)))
         );
+        if (isLoraSelector && picked){
+          row.appendChild(createStrengthControls(m));
+        }
         row.addEventListener('mouseenter', (e)=>{ trackMouse(e); schedulePreview(m); });
         row.addEventListener('mousemove', (e)=>{ trackMouse(e); });
         row.addEventListener('mouseleave', ()=>{ removePreview(); });
@@ -665,7 +734,8 @@
         const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
         const value = (m && m.lora_name) ? m.lora_name : base; // 优先相对名
         const label = (m && (m.name || base)) || String(value);
-        return { value, label };
+        const st = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
+        return { value, label, sm: Number(st.sm)||1.0, sc: Number(st.sc)||1.0 };
       });
       const msg = { type: 'hikaze-mm-select', requestId: state.selector.requestId, payload: { kind: 'lora', items, mode } };
       try { window.parent.postMessage(msg, '*'); } catch(_) {}
