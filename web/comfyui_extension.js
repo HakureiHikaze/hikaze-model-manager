@@ -48,6 +48,196 @@ function normalizeLoraKey(s){
     }catch(_){ return ''; }
 }
 
+// Universal Isolated Container Widget - bypasses ComfyUI's default rendering
+class HikazeIsolatedWidget {
+    constructor(name, options = {}) {
+        this.name = name;
+        this.type = "hikaze_isolated";
+        this.value = options.value || null;
+        this.options = options;
+        this.y = 0;
+        this.height = options.height || LiteGraph.NODE_WIDGET_HEIGHT;
+        this.last_y = 0;
+        this.mouse_pressed = false;
+    }
+
+    draw(ctx, node, width, y, height) {
+        this.last_y = y;
+        this.height = height;
+        
+        // Clear background with isolated styling
+        ctx.fillStyle = "#21252b";
+        ctx.fillRect(0, y, width, height);
+        
+        // Add border for isolation
+        ctx.strokeStyle = "#404040";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0, y, width, height);
+        
+        // Delegate to custom renderer if available
+        if (this.customDraw) {
+            this.customDraw(ctx, node, width, y, height);
+        }
+    }
+
+    mouse(event, pos, node) {
+        if (this.customMouse) {
+            return this.customMouse(event, pos, node);
+        }
+        return false;
+    }
+
+    computeSize(width) {
+        return [width, this.height];
+    }
+}
+
+// Custom LoRA Row Widget that renders as table format
+class HikazeLoraRowWidget extends HikazeIsolatedWidget {
+    constructor(name, value = null) {
+        super(name, { height: 30 });
+        this.value = value || { key: '', label: 'None', sm: 1.0, sc: 1.0, on: true };
+        this.customDraw = this.drawLoraRow.bind(this);
+        this.customMouse = this.mouseLoraRow.bind(this);
+    }
+
+    drawLoraRow(ctx, node, width, y, height) {
+        const data = this.value;
+        if (!data) return;
+
+        const margin = 8;
+        const rowHeight = height;
+        const midY = y + rowHeight / 2;
+        
+        // Layout calculation - table columns
+        const toggleWidth = 20;
+        const removeBtnWidth = 20;
+        const strengthWidth = 50;
+        const strengthLabelWidth = 10; // Reduced for compactness
+        const totalReservedWidth = toggleWidth + (strengthWidth + strengthLabelWidth) * 2 + removeBtnWidth + margin * 5;
+        const nameWidth = Math.max(100, width - totalReservedWidth);
+
+        let currentX = margin;
+
+        // Column 1: LoRA Name (read-only text)
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = data.on ? "#e6edf3" : "#8b949e";
+        const displayName = String(data.label || data.key || 'None');
+        let truncatedName = displayName;
+        
+        // Truncate if too long
+        const maxNameWidth = nameWidth - margin;
+        while (ctx.measureText(truncatedName).width > maxNameWidth && truncatedName.length > 4) {
+            truncatedName = truncatedName.slice(0, -4) + '...';
+        }
+        ctx.fillText(truncatedName, currentX, midY);
+        currentX += nameWidth;
+
+        // Column 2: Model Strength (read-only text)
+        ctx.fillStyle = data.on ? "#58a6ff" : "#6e7681";
+        ctx.fillText("M:", currentX, midY);
+        currentX += strengthLabelWidth;
+        ctx.fillStyle = data.on ? "#7ee787" : "#6e7681";
+        ctx.fillText(Number(data.sm).toFixed(2), currentX, midY);
+        currentX += strengthWidth;
+
+        // Column 3: Clip Strength (read-only text)  
+        ctx.fillStyle = data.on ? "#58a6ff" : "#6e7681";
+        ctx.fillText("C:", currentX, midY);
+        currentX += strengthLabelWidth;
+        ctx.fillStyle = data.on ? "#7ee787" : "#6e7681";
+        ctx.fillText(Number(data.sc).toFixed(2), currentX, midY);
+        currentX += strengthWidth;
+
+        // Column 4: Toggle Switch (interactive)
+        const toggleX = currentX;
+        const toggleY = y + (height - toggleWidth) / 2;
+        ctx.fillStyle = data.on ? "#2ea043" : "#6e7681";
+        ctx.fillRect(toggleX, toggleY, toggleWidth, toggleWidth);
+        
+        // Toggle indicator
+        ctx.fillStyle = "#ffffff";
+        if (data.on) {
+            ctx.fillText("✓", toggleX + toggleWidth/2 - 6, midY);
+        }
+        currentX += toggleWidth + margin;
+
+        // Column 5: Remove Button (interactive)
+        const btnX = currentX;
+        const btnY = y + (height - removeBtnWidth) / 2;
+        ctx.fillStyle = "#da3633";
+        ctx.fillRect(btnX, btnY, removeBtnWidth, removeBtnWidth);
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.fillText("×", btnX + removeBtnWidth/2, midY);
+        
+        // Store hit areas for mouse handling
+        this.hitAreas = {
+            toggle: { x: toggleX, y: toggleY, width: toggleWidth, height: toggleWidth },
+            remove: { x: btnX, y: btnY, width: removeBtnWidth, height: removeBtnWidth }
+        };
+    }
+
+    mouseLoraRow(event, pos, node) {
+        if (event.type !== 'mousedown') return false;
+        if (!this.hitAreas) return false;
+
+        const relativeY = pos[1] - this.last_y;
+        
+        // Check toggle button
+        const toggle = this.hitAreas.toggle;
+        if (pos[0] >= toggle.x && pos[0] <= toggle.x + toggle.width &&
+            relativeY >= 0 && relativeY <= toggle.height) {
+            this.value.on = !this.value.on;
+            try { node.setDirtyCanvas(true, true); } catch(_) {}
+            return true;
+        }
+
+        // Check remove button
+        const remove = this.hitAreas.remove;
+        if (pos[0] >= remove.x && pos[0] <= remove.x + remove.width &&
+            relativeY >= 0 && relativeY <= remove.height) {
+            this.removeFromNode(node);
+            return true;
+        }
+
+        return false;
+    }
+
+    removeFromNode(node) {
+        if (!node.widgets) return;
+        
+        const index = node.widgets.indexOf(this);
+        if (index !== -1) {
+            node.widgets.splice(index, 1);
+            
+            // Re-index subsequent lora widgets
+            for (let i = index; i < node.widgets.length; i++) {
+                const widget = node.widgets[i];
+                if (widget && widget.name && widget.name.startsWith('lora_')) {
+                    const oldName = widget.name;
+                    const newName = `lora_${i}`;
+                    widget.name = newName;
+                }
+            }
+            
+            try { node.setDirtyCanvas(true, true); } catch(_) {}
+            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
+            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
+        }
+    }
+
+    serializeValue() {
+        // Return a serialized copy for backend compatibility
+        try {
+            return JSON.stringify(this.value || {});
+        } catch(_) {
+            return this.value;
+        }
+    }
+}
+
 function collectLoraGroups(node){
     const groups = new Map(); // idx -> { idx, on, nameWidget, nameVal, smWidget, scWidget }
     const list = Array.isArray(node.widgets) ? node.widgets : [];
@@ -85,71 +275,85 @@ function removeGroup(node, idx){
 function clearAllGroups(node){
     try{
         if (!Array.isArray(node.widgets)) return;
-        // Filter both old format and new format
+        // Filter both old format and new custom widget
         const re = /^lora_\d+(?:_(?:on|strength_model|strength_clip|remove))?$/;
         node.widgets = node.widgets.filter(w=>{
             const name = w && (w.name || w.label);
             if (!name) return true;
-            return !re.test(String(name));
+            const isOld = re.test(String(name));
+            const isNew = w instanceof HikazeLoraRowWidget;
+            return !isOld && !isNew;
         });
     }catch(err){ console.warn('[Hikaze] clearAllGroups failed:', err); }
 }
 
 function ensureGroup(node, idx, item){
-    // Create simple widgets that match the backend's expectations
     if (!Array.isArray(node.widgets)) node.widgets = [];
     
-    // Remove existing widgets for this index first
-    removeGroup(node, idx);
+    const widgetName = `lora_${idx}`;
     
-    const key = item.key || '';
-    const sm = Number(item.sm) || 1.0;
-    const sc = Number(item.sc) || 1.0;
+    // Check if widget with this name already exists
+    let existingWidget = node.widgets.find(w => w.name === widgetName && w instanceof HikazeLoraRowWidget);
     
-    // Add the widgets that the backend expects
-    if (node.addWidget) {
-        // LoRA name widget
-        const nameWidget = node.addWidget('text', `lora_${idx}`, key, null, {
-            multiline: false,
-            placeholder: 'LoRA name'
-        });
-        if (nameWidget) nameWidget.value = key;
+    const widgetValue = {
+        key: normalizeLoraKey(item.key || item.value || ''),
+        label: String(item.label || item.value || item.key || 'None'),
+        sm: Number(item.sm) || 1.0,
+        sc: Number(item.sc) || 1.0,
+        on: item.on !== undefined ? Boolean(item.on) : true
+    };
+
+    if (existingWidget) {
+        // Update existing widget's value
+        existingWidget.value = widgetValue;
+    } else {
+        // Remove any legacy widgets for this index first
+        removeGroup(node, idx);
         
-        // On/off widget
-        const onWidget = node.addWidget('toggle', `lora_${idx}_on`, true);
-        if (onWidget) onWidget.value = true;
-        
-        // Model strength widget
-        const smWidget = node.addWidget('number', `lora_${idx}_strength_model`, sm, null, {
-            min: -10, max: 10, step: 0.05, precision: 2
-        });
-        if (smWidget) smWidget.value = sm;
-        
-        // Clip strength widget
-        const scWidget = node.addWidget('number', `lora_${idx}_strength_clip`, sc, null, {
-            min: -10, max: 10, step: 0.05, precision: 2
-        });
-        if (scWidget) scWidget.value = sc;
-        
-        // Remove button
-        const rmWidget = node.addWidget('button', `lora_${idx}_remove`, 'Remove', () => {
-            removeGroup(node, idx);
-            try { node.setDirtyCanvas(true, true); } catch(_) {}
-        }, { serialize: false });
+        // Add new custom isolated widget
+        const widget = new HikazeLoraRowWidget(widgetName, widgetValue);
+        node.widgets.push(widget);
     }
 }
 
 function currentSelectedKeysForPreselect(node){
     const keys = [];
     if (!node.widgets) return keys;
-    // Look for lora_N widgets (the name widgets)
+    
+    // Look for both old format and new custom widgets
     for(const w of node.widgets){
-        if (w && w.name && w.name.match(/^lora_\d+$/) && w.value){
+        if (w instanceof HikazeLoraRowWidget && w.value && w.value.key){
+            const key = normalizeLoraKey(w.value.key);
+            if (key) keys.push(key);
+        } else if (w && w.name && w.name.match(/^lora_\d+$/) && w.value){
+            // Legacy widget support
             const key = normalizeLoraKey(w.value);
             if (key) keys.push(key);
         }
     }
     return keys;
+}
+
+function currentSelectedItemsForPreselect(node){
+    const items = [];
+    if (!node.widgets) return items;
+    
+    // Collect items from new custom widgets
+    for(const w of node.widgets){
+        if (w instanceof HikazeLoraRowWidget && w.value && w.value.key){
+            const key = normalizeLoraKey(w.value.key);
+            if (key) {
+                items.push({
+                    key: key,
+                    label: w.value.label || key,
+                    sm: w.value.sm || 1.0,
+                    sc: w.value.sc || 1.0,
+                    on: w.value.on !== undefined ? w.value.on : true
+                });
+            }
+        }
+    }
+    return items;
 }
 
 
@@ -403,6 +607,23 @@ function enhancePowerLoraLoaderNode(node){
         if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
         if (!Array.isArray(node.widgets)) node.widgets = [];
 
+        // Migration from legacy widgets to new custom widgets
+        const groups = collectLoraGroups(node);
+        if (groups.size > 0) {
+            const itemsToMigrate = [];
+            for (const g of groups.values()) {
+                itemsToMigrate.push({
+                    key: g.nameVal,
+                    label: g.nameVal,
+                    sm: g.smWidget ? g.smWidget.value : 1.0,
+                    sc: g.scWidget ? g.scWidget.value : 1.0,
+                    on: g.onWidget ? g.onWidget.value : true
+                });
+            }
+            clearAllGroups(node); // Clear old widgets
+            itemsToMigrate.forEach((item, idx) => ensureGroup(node, idx, item));
+        }
+
         // If there is a legacy read-only display, migrate it to grouped widgets
         try{
             const js = node.widgets.find(w=> w && (w.name === 'lora_items_json'));
@@ -424,18 +645,110 @@ function enhancePowerLoraLoaderNode(node){
             }
         }catch(_){ }
         
-        // If still no groups exist, create an empty one
-        const groups = collectLoraGroups(node);
-        if (!groups.size){ ensureGroup(node, 0, { key:'', label:'', sm:1.0, sc:1.0 }); }
+        // If still no custom widgets exist, create an empty one
+        const hasLoraWidget = node.widgets.some(w => w instanceof HikazeLoraRowWidget);
+        if (!hasLoraWidget) { 
+            ensureGroup(node, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true }); 
+        }
+
+        // Override node serialization to support backend compatibility
+        const originalSerialize = node.serialize;
+        node.serialize = function() {
+            const data = originalSerialize ? originalSerialize.call(this) : {};
+            
+            // Convert custom widgets to backend-compatible format
+            if (!data.inputs) data.inputs = {};
+            
+            // Clear existing lora_* inputs
+            for (const key in data.inputs) {
+                if (key.startsWith('lora_')) {
+                    delete data.inputs[key];
+                }
+            }
+            
+            // Convert custom widgets to backend inputs
+            let loraIndex = 0;
+            if (this.widgets) {
+                for (const w of this.widgets) {
+                    if (w instanceof HikazeLoraRowWidget && w.value && w.value.key) {
+                        const key = w.value.key.trim();
+                        if (key && key.toLowerCase() !== 'none') {
+                            data.inputs[`lora_${loraIndex}`] = key;
+                            data.inputs[`lora_${loraIndex}_on`] = Boolean(w.value.on);
+                            data.inputs[`lora_${loraIndex}_strength_model`] = Number(w.value.sm) || 1.0;
+                            data.inputs[`lora_${loraIndex}_strength_clip`] = Number(w.value.sc) || 1.0;
+                            loraIndex++;
+                        }
+                    }
+                }
+            }
+            
+            return data;
+        };
+
+        // Add configure method to load from serialized data
+        const originalConfigure = node.configure;
+        node.configure = function(info) {
+            if (originalConfigure) {
+                originalConfigure.apply(this, arguments);
+            }
+            
+            // Load from serialized inputs data
+            if (info.inputs) {
+                this.loadFromInputsData(info.inputs);
+            }
+        };
+
+        // Method to load from inputs data
+        node.loadFromInputsData = function(inputs) {
+            if (!inputs) return;
+            
+            clearAllGroups(this);
+            
+            // Group inputs by lora index
+            const loraGroups = {};
+            for (const [key, value] of Object.entries(inputs)) {
+                const match = key.match(/^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/);
+                if (match) {
+                    const idx = parseInt(match[1], 10);
+                    const subkey = match[2] || 'name';
+                    if (!loraGroups[idx]) loraGroups[idx] = {};
+                    loraGroups[idx][subkey] = value;
+                }
+            }
+            
+            // Create widgets from grouped data
+            Object.keys(loraGroups).sort((a, b) => parseInt(a) - parseInt(b)).forEach((idx, widgetIdx) => {
+                const group = loraGroups[idx];
+                if (group.name && group.on !== false) {
+                    ensureGroup(this, widgetIdx, {
+                        key: group.name,
+                        label: group.name,
+                        sm: Number(group.strength_model) || 1.0,
+                        sc: Number(group.strength_clip) || 1.0,
+                        on: Boolean(group.on)
+                    });
+                }
+            });
+            
+            // Add empty placeholder if no widgets
+            if (!this.widgets.some(w => w instanceof HikazeLoraRowWidget)) {
+                ensureGroup(this, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true });
+            }
+        };
         
         // Selection entry button
-        const btn = node.addWidget && node.addWidget('button', 'choose_models', t('mm.btn.chooseModelEllipsis'), () => {
-            const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-            const selected = currentSelectedKeysForPreselect(node);
-            const overlay = openModelSelector({ kind: 'lora', requestId, selected });
-            HikazeManager.pending.set(requestId, { node, overlay, mode: 'replace' });
-        }, { serialize: false });
-        if (btn) btn.label = 'choose_models';
+        const hasButton = node.widgets.some(w => w.name === 'choose_models');
+        if (!hasButton) {
+            const btn = node.addWidget && node.addWidget('button', 'choose_models', t('mm.btn.chooseModelEllipsis'), () => {
+                const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+                const selectedItems = currentSelectedItemsForPreselect(node);
+                const overlay = openModelSelector({ kind: 'lora', requestId, selectedItems });
+                HikazeManager.pending.set(requestId, { node, overlay, mode: 'replace' });
+            }, { serialize: false });
+            if (btn) btn.label = 'choose_models';
+        }
+
         try { node.setDirtyCanvas(true, true); } catch(_) {}
     } catch(err){
         console.warn('[Hikaze] enhance power lora node failed:', err);
@@ -526,21 +839,19 @@ function setupMessageListener(){
                     key: normalizeLoraKey(it && (it.value || it.label || '')), 
                     label: String((it && (it.label || it.value)) || ''), 
                     sm: (typeof it.sm==='number'? it.sm: 1.0), 
-                    sc: (typeof it.sc==='number'? it.sc: 1.0) 
+                    sc: (typeof it.sc==='number'? it.sc: 1.0),
+                    on: true
                 })).filter(it=>it.key);
 
                 if (opMode === 'replace') {
                     clearAllGroups(node);
                 }
 
-                // Find the next available index
+                // Find the next available index for new widgets
                 let idx = 0;
                 if (opMode === 'append') {
-                    // Find the highest existing index + 1
-                    const existingGroups = collectLoraGroups(node);
-                    if (existingGroups.size > 0) {
-                        idx = Math.max(...existingGroups.keys()) + 1;
-                    }
+                    // Count existing custom widgets
+                    idx = node.widgets.filter(w => w instanceof HikazeLoraRowWidget).length;
                 }
 
                 for (const it of incoming){
@@ -554,7 +865,7 @@ function setupMessageListener(){
 
                 // If the list is empty after a replace operation, add a placeholder
                 if (opMode === 'replace' && incoming.length === 0) {
-                    ensureGroup(node, 0, { key:'', label:'None', sm:1.0, sc:1.0 });
+                    ensureGroup(node, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true });
                 }
 
                 try { node.setDirtyCanvas(true, true); } catch(_) {}
