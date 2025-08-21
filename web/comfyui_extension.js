@@ -153,24 +153,45 @@ class HikazeLoraRowWidget extends HikazeIsolatedWidget {
         // Column 4: Toggle Switch (interactive)
         const toggleX = currentX;
         const toggleY = y + (height - toggleWidth) / 2;
+        
+        // Draw toggle background
         ctx.fillStyle = data.on ? "#2ea043" : "#6e7681";
         ctx.fillRect(toggleX, toggleY, toggleWidth, toggleWidth);
         
+        // Draw toggle border
+        ctx.strokeStyle = data.on ? "#46954a" : "#8b949e";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(toggleX, toggleY, toggleWidth, toggleWidth);
+        
         // Toggle indicator
         ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
         if (data.on) {
-            ctx.fillText("✓", toggleX + toggleWidth/2 - 6, midY);
+            ctx.fillText("✓", toggleX + toggleWidth/2, midY);
+        } else {
+            ctx.fillText("⭘", toggleX + toggleWidth/2, midY);
         }
+        ctx.textAlign = "left"; // Reset alignment
         currentX += toggleWidth + margin;
 
         // Column 5: Remove Button (interactive)
         const btnX = currentX;
         const btnY = y + (height - removeBtnWidth) / 2;
+        
+        // Draw remove button background
         ctx.fillStyle = "#da3633";
         ctx.fillRect(btnX, btnY, removeBtnWidth, removeBtnWidth);
+        
+        // Draw remove button border
+        ctx.strokeStyle = "#f85149";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(btnX, btnY, removeBtnWidth, removeBtnWidth);
+        
+        // Draw remove button text
         ctx.fillStyle = "#ffffff";
         ctx.textAlign = "center";
         ctx.fillText("×", btnX + removeBtnWidth/2, midY);
+        ctx.textAlign = "left"; // Reset alignment
         
         // Store hit areas for mouse handling
         this.hitAreas = {
@@ -684,6 +705,31 @@ function enhancePowerLoraLoaderNode(node){
             }
             
             return data;
+        };
+
+        // Override onPropertyChanged for better integration
+        const originalOnPropertyChanged = node.onPropertyChanged;
+        node.onPropertyChanged = function(name, value) {
+            if (originalOnPropertyChanged) {
+                originalOnPropertyChanged.call(this, name, value);
+            }
+            // Trigger redraw when properties change
+            try { this.setDirtyCanvas(true, true); } catch(_) {}
+        };
+
+        // Override computeSize to account for custom widgets
+        const originalComputeSize = node.computeSize;
+        node.computeSize = function() {
+            if (originalComputeSize) {
+                const baseSize = originalComputeSize.call(this);
+                // Add extra height for custom widgets
+                const customWidgetCount = this.widgets ? this.widgets.filter(w => w instanceof HikazeLoraRowWidget).length : 0;
+                if (customWidgetCount > 0) {
+                    baseSize[1] += customWidgetCount * 35; // Add height for each custom widget
+                }
+                return baseSize;
+            }
+            return [200, 100]; // Default size
         };
 
         // Add configure method to load from serialized data
