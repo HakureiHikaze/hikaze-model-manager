@@ -16,24 +16,16 @@ import os
 
 # Lightweight implementation: FlexibleOptionalInputType and AnyType (inspired by rgthree)
 class _AnyType(str):
-    def __ne__(self, __value: object) -> bool:  # always unequal, to relax type comparison
+    def __ne__(self, __value: object) -> bool:
         return False
 
 
 class FlexibleOptionalInputType(dict):
-    def __init__(self, type, data: Dict[str, Any] | None = None):
-        self.type = type
-        self.data = data or {}
-        for k, v in self.data.items():
-            self[k] = v
-
-    def __getitem__(self, key):  # return (self.type,) for any undeclared key
-        if key in self.data:
-            return self.data[key]
-        return (self.type,)
-
-    def __contains__(self, key):  # always contains any key
+    def __contains__(self, item):
         return True
+
+    def __getitem__(self, item):
+        return (_AnyType("*"), {"default": None})
 
 
 _any_type = _AnyType("*")
@@ -42,13 +34,10 @@ _any_type = _AnyType("*")
 class HikazePowerLoraLoader:
     @classmethod
     def INPUT_TYPES(cls):
-        # Use FlexibleOptionalInputType to accept arbitrary dynamic keys (including lora_* and bypass)
         return {
             "required": {},
-            "optional": FlexibleOptionalInputType(type=_any_type, data={
-                "model": ("MODEL",),
-                "clip": ("CLIP",),
-            }),
+            "optional": FlexibleOptionalInputType(),
+            "hidden": {},
         }
 
     RETURN_TYPES = ("MODEL", "CLIP")
