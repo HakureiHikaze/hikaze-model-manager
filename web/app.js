@@ -117,7 +117,7 @@
     models: [],
     total: 0,
     page: 1,
-    limit: 500,
+    limit: 5000,
     loading: false,
     hasMore: true,
     selectedModel: null,
@@ -127,11 +127,13 @@
       on: selectorMode,
       kind: selectorKind,
       requestId: selectorRequestId,
-      selectedIds: new Set(), // selected id set for multi-select
-      preKeys: preselectedKeys, // preselected identity keys
-      strengths: new Map(), // id -> { sm, sc }
+      selectedIds: new Set(),
+      preKeys: preselectedKeys,
+      strengths: new Map(),
+      preselectedIds: new Set(), // 新增：记录 URL 传入的预选模型 id
+      filterSelected: false      // 新增：是否只显示已选
     },
-    loadSeq: 0 // 新增：请求序列号，��于丢弃过期搜索结果
+    loadSeq: 0 // 新增：请求序列号，用于丢弃过期搜索结果
   };
 
   // DOM
@@ -153,6 +155,9 @@
     // toolbar buttons: settings/close
     settingsBtn: document.getElementById('settingsBtn'),
     closeBtn: document.getElementById('closeBtn'),
+    // 新增
+    clearSelectionBtn: document.getElementById('clearSelectionBtn'),
+    filterSelectedCheckbox: document.getElementById('filterSelectedCheckbox'),
   };
 
   // Added: safe binding and logging
@@ -392,10 +397,11 @@
 
       // map preselected keys for lora
       if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
-        for (const m of newModels){ // Only check new models
+        for (const m of newModels){
           const key = identityForModel(m);
           if (key && state.selector.preKeys.has(key)){
             state.selector.selectedIds.add(m.id);
+            state.selector.preselectedIds.add(m.id); // 记录为“预选”
             if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
           }
         }
@@ -410,6 +416,7 @@
             const preselected = preselectedItems.find(item => normalizeKey(item.key) === key);
             if (preselected) {
               state.selector.selectedIds.add(m.id);
+              state.selector.preselectedIds.add(m.id); // 记录为“预选”
               state.selector.strengths.set(m.id, {
                 sm: Number(preselected.sm) || 1.0,
                 sc: Number(preselected.sc) || 1.0
@@ -492,13 +499,35 @@
       el.modelsContainer.innerHTML = '';
     }
 
-    const modelsToRender = append ? state.models.slice(-state.limit) : state.models;
+    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
+
+    // 过滤：只显示已选
+    let baseList = state.models;
+    if (state.selector.on && state.selector.filterSelected){
+      if (isLoraSelector){
+        baseList = baseList.filter(m=> state.selector.selectedIds.has(m.id));
+      }else{
+        baseList = state.selectedModel ? baseList.filter(m=> m.id === state.selectedModel.id) : [];
+      }
+      append = false; // 过滤模式强制全量渲染
+    }
+
+    // 预选排序：预选 LoRA 置前（保持各自内部原顺序），不影响后续用户新增选择顺序
+    if (isLoraSelector && state.selector.preselectedIds.size){
+      const pre = [], rest = [];
+      for (const m of baseList){
+        (state.selector.preselectedIds.has(m.id) ? pre : rest).push(m);
+      }
+      baseList = pre.concat(rest);
+      append = false; // 排序后需全量渲染
+    }
+
+    const modelsToRender = append ? baseList.slice(-state.limit) : baseList;
 
     if (!append && !modelsToRender.length){
       el.modelsContainer.appendChild(h('div', {class:'empty'}, t('mm.empty')));
       return;
     }
-    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
     const stop = (e)=>{ try{ e.stopPropagation(); }catch(_){} };
     const includeModel = (m)=>{ if (!state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.add(m.id); if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 }); } };
     const removeModel = (m)=>{ if (state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.delete(m.id); state.selector.strengths.delete(m.id); } };
@@ -920,6 +949,27 @@
     bind(el.saveBtn, 'click', ()=>{ saveDetail().catch(err=>alert(t('mm.save.fail')+err.message)); }, 'saveBtn');
     bind(el.revertBtn, 'click', ()=> revertDetail(), 'revertBtn');
 
+    // 新增：取消全部选择
+    bind(el.clearSelectionBtn, 'click', ()=>{
+      if (!state.selector.on) return;
+      if ((state.selector.kind||'').toLowerCase().startsWith('lora')){
+        state.selector.selectedIds.clear();
+        state.selector.strengths.clear();
+      }else{
+        state.selectedModel = null;
+        state.originalDetail = null;
+      }
+      updateActionsState();
+      renderDetail();
+      renderModels(false);
+    }, 'clearSelectionBtn');
+
+    // 新增：筛选已选
+    bind(el.filterSelectedCheckbox, 'change', ()=>{
+      state.selector.filterSelected = !!el.filterSelectedCheckbox.checked;
+      renderModels(false);
+    }, 'filterSelectedCheckbox');
+
     updateActionsState();
   }
 
@@ -948,6 +998,24 @@
       el.saveBtn.disabled = !has;
       el.revertBtn.disabled = !has;
       if (el.confirmBtn) el.confirmBtn.style.display = 'none';
+    }
+    const isLora = !!(state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora'));
+    if (state.selector.on){
+      // 显示 / 隐藏新控件
+      if (el.clearSelectionBtn){
+        el.clearSelectionBtn.style.display = isLora ? '' : 'none';
+        el.clearSelectionBtn.disabled = isLora ? (state.selector.selectedIds.size===0) : false;
+      }
+      if (el.filterSelectedCheckbox){
+        el.filterSelectedCheckbox.parentElement.style.display = '';
+        el.filterSelectedCheckbox.checked = !!state.selector.filterSelected;
+      }
+    }else{
+      if (el.clearSelectionBtn) el.clearSelectionBtn.style.display = 'none';
+      if (el.filterSelectedCheckbox){
+        el.filterSelectedCheckbox.parentElement.style.display = 'none';
+        el.filterSelectedCheckbox.checked = false;
+      }
     }
   }
 

@@ -89,5 +89,7 @@
   "mm.settings": "设置",
   "mm.settings.category": "Hikaze 模型管理器",
   "mm.settings.lang.name": "语言",
-  "mm.settings.lang.system": "跟随系统"
+  "mm.settings.lang.system": "跟随系统",
+  "mm.btn.clearSelection": "清除选择",
+  "mm.filter.selectedOnly": "仅显示已选择"
 }
