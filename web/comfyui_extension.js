@@ -65,16 +65,13 @@ class HikazeIsolatedWidget {
         this.last_y = y;
         this.height = height;
         
-        // Clear background with isolated styling
         ctx.fillStyle = "#21252b";
         ctx.fillRect(0, y, width, height);
         
-        // Add border for isolation
         ctx.strokeStyle = "#404040";
         ctx.lineWidth = 1;
         ctx.strokeRect(0, y, width, height);
         
-        // Delegate to custom renderer if available
         if (this.customDraw) {
             this.customDraw(ctx, node, width, y, height);
         }
@@ -89,6 +86,87 @@ class HikazeIsolatedWidget {
 
     computeSize(width) {
         return [width, this.height];
+    }
+}
+
+// 新：画布绘制面板（替代之前 DOM overlay 实现）
+class HikazeLoraPanelWidget extends HikazeIsolatedWidget {
+    constructor(name, options = {}){
+        super(name, { height: 140 });
+        this.type = 'hikaze_lora_panel';
+        this.itemsProvider = options.itemsProvider; // ()=>array
+        this.maxHeight = options.maxHeight || 260;
+        this.rowHeight = 22;
+        this.headerHeight = 24;
+        this.padding = 6;
+    }
+    ensureHeight(){
+        const items = (this.itemsProvider && this.itemsProvider()) || [];
+        const h = this.headerHeight + items.length * this.rowHeight + this.padding*2;
+        const target = Math.min(this.maxHeight, Math.max( this.headerHeight + this.rowHeight + this.padding*2, h));
+        if (Math.abs(target - this.height) > 0.5){
+            this.height = target;
+        }
+    }
+    customDraw(ctx, node, width, y, height){
+        this.ensureHeight();
+        const items = (this.itemsProvider && this.itemsProvider()) || [];
+        // 背景已经由父类填充，这里再加内层
+        const px = 4; const py = y + 4; const innerW = width - 8; const innerH = this.height - 8;
+        ctx.fillStyle = '#1c1f23';
+        ctx.fillRect(px, py, innerW, innerH);
+        ctx.strokeStyle = '#30363d';
+        ctx.strokeRect(px, py, innerW, innerH);
+        // Header
+        ctx.save();
+        ctx.beginPath(); ctx.rect(px, py, innerW, innerH); ctx.clip();
+        ctx.fillStyle = '#262b30';
+        ctx.fillRect(px, py, innerW, this.headerHeight);
+        ctx.fillStyle = '#9aa0a6';
+        ctx.textBaseline = 'middle';
+        ctx.font = '12px sans-serif';
+        const colSeqW = 36; const colModelW = 70; const colClipW = 70; // fixed
+        const colNameW = innerW - colSeqW - colModelW - colClipW - 16; // paddings
+        let tx = px + 8; const hy = py + this.headerHeight/2;
+        ctx.fillText('#', tx, hy); tx += colSeqW;
+        ctx.fillText('LoRA', tx, hy); tx += colNameW;
+        ctx.fillText('Model', tx, hy); tx += colModelW;
+        ctx.fillText('CLIP', tx, hy);
+        // 分隔线
+        ctx.strokeStyle = '#343a40';
+        ctx.beginPath(); ctx.moveTo(px, py + this.headerHeight + 0.5); ctx.lineTo(px+innerW, py + this.headerHeight + 0.5); ctx.stroke();
+        // Rows
+        const startY = py + this.headerHeight;
+        items.forEach((it, idx)=>{
+            const ry = startY + idx * this.rowHeight;
+            if (ry + this.rowHeight > py + innerH) return; // overflow hidden
+            // zebra
+            if (idx % 2 === 0){ ctx.fillStyle = '#21262c'; ctx.fillRect(px+1, ry, innerW-2, this.rowHeight); }
+            const mid = ry + this.rowHeight/2;
+            let cx = px + 8;
+            ctx.fillStyle = '#adb4ba';
+            ctx.fillText(String(idx+1), cx, mid); cx += colSeqW;
+            const name = String(it.label || it.key || '');
+            // truncate name
+            ctx.save();
+            ctx.beginPath(); ctx.rect(cx, ry, colNameW-4, this.rowHeight); ctx.clip();
+            ctx.fillStyle = '#d1d5d9';
+            ctx.fillText(name, cx, mid);
+            ctx.restore();
+            cx += colNameW;
+            ctx.fillStyle = '#7ee787';
+            ctx.fillText((Number(it.sm)||1).toFixed(2), cx, mid); cx += colModelW;
+            ctx.fillStyle = '#7ee787';
+            ctx.fillText((Number(it.sc)||1).toFixed(2), cx, mid);
+        });
+        ctx.restore();
+        // Scroll 提示（当前未实现滚动，未来可加）
+        if (this.headerHeight + items.length * this.rowHeight + this.padding*2 > this.maxHeight){
+            ctx.fillStyle = 'rgba(255,255,255,0.25)';
+            ctx.font = '10px sans-serif';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('More...', px + innerW - 44, py + innerH - 4);
+        }
     }
 }
 
@@ -296,13 +374,13 @@ function removeGroup(node, idx){
 function clearAllGroups(node){
     try{
         if (!Array.isArray(node.widgets)) return;
-        // Filter both old format and new custom widget
         const re = /^lora_\d+(?:_(?:on|strength_model|strength_clip|remove))?$/;
         node.widgets = node.widgets.filter(w=>{
             const name = w && (w.name || w.label);
             if (!name) return true;
+            // 去除旧的行部件和新的面板部件（面板后面重新创建）
             const isOld = re.test(String(name));
-            const isNew = w instanceof HikazeLoraRowWidget;
+            const isNew = w instanceof HikazeLoraRowWidget || w instanceof HikazeLoraPanelWidget;
             return !isOld && !isNew;
         });
     }catch(err){ console.warn('[Hikaze] clearAllGroups failed:', err); }
@@ -357,21 +435,16 @@ function currentSelectedKeysForPreselect(node){
 
 function currentSelectedItemsForPreselect(node){
     const items = [];
+    if (!node) return items;
+    if (Array.isArray(node.loraItems) && node.loraItems.length){
+        node.loraItems.forEach(it=>{ if (it && it.key) items.push({...it}); });
+        return items;
+    }
     if (!node.widgets) return items;
-    
-    // Collect items from new custom widgets
     for(const w of node.widgets){
         if (w instanceof HikazeLoraRowWidget && w.value && w.value.key){
             const key = normalizeLoraKey(w.value.key);
-            if (key) {
-                items.push({
-                    key: key,
-                    label: w.value.label || key,
-                    sm: w.value.sm || 1.0,
-                    sc: w.value.sc || 1.0,
-                    on: w.value.on !== undefined ? w.value.on : true
-                });
-            }
+            if (key) items.push({ key, label: w.value.label || key, sm: w.value.sm||1, sc: w.value.sc||1, on: w.value.on!==false });
         }
     }
     return items;
@@ -627,178 +700,54 @@ function enhancePowerLoraLoaderNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
         if (!Array.isArray(node.widgets)) node.widgets = [];
-
-        // Migration from legacy widgets to new custom widgets
-        const groups = collectLoraGroups(node);
-        if (groups.size > 0) {
-            const itemsToMigrate = [];
-            for (const g of groups.values()) {
-                itemsToMigrate.push({
-                    key: g.nameVal,
-                    label: g.nameVal,
-                    sm: g.smWidget ? g.smWidget.value : 1.0,
-                    sc: g.scWidget ? g.scWidget.value : 1.0,
-                    on: g.onWidget ? g.onWidget.value : true
-                });
-            }
-            clearAllGroups(node); // Clear old widgets
-            itemsToMigrate.forEach((item, idx) => ensureGroup(node, idx, item));
+        // 迁移旧数据
+        const legacyGroups = collectLoraGroups(node);
+        const migrate = [];
+        if (legacyGroups.size){
+            for (const g of legacyGroups.values()) migrate.push({ key: normalizeLoraKey(g.nameVal||''), label: g.nameVal||'', sm: g.smWidget?g.smWidget.value:1, sc: g.scWidget?g.scWidget.value:1, on: g.onWidget?g.onWidget.value:true });
         }
-
-        // If there is a legacy read-only display, migrate it to grouped widgets
-        try{
+        try {
             const js = node.widgets.find(w=> w && (w.name === 'lora_items_json'));
             if (js && js.value){
-                try{
-                    const arr = JSON.parse(String(js.value||'[]'));
-                    clearAllGroups(node);
-                    // Remove read-only items
-                    node.widgets = node.widgets.filter(w=>{
-                        const n = w && (w.name || w.label) || '';
-                        return !(typeof n === 'string' && (/^lora_item_\d+$/.test(n) || n === 'lora_items_json'));
-                    });
-                    let idx = 0;
-                    for (const it of (Array.isArray(arr)? arr: [])){
-                        const item = { key: normalizeLoraKey(it.key||it.value||''), label: String(it.label||it.value||it.key||''), sm: Number(it.sm)||1.0, sc: Number(it.sc)||1.0 };
-                        ensureGroup(node, idx++, item);
-                    }
-                }catch(_){ /* ignore */ }
+                try { const arr = JSON.parse(String(js.value||'[]')); for (const it of (Array.isArray(arr)?arr:[])){ const key=normalizeLoraKey(it.key||it.value||''); if(!key) continue; migrate.push({ key, label: it.label||it.value||it.key||'', sm:Number(it.sm)||1, sc:Number(it.sc)||1, on: it.on!==false }); } }catch(_){ }
             }
         }catch(_){ }
-        
-        // If still no custom widgets exist, create an empty one
-        const hasLoraWidget = node.widgets.some(w => w instanceof HikazeLoraRowWidget);
-        if (!hasLoraWidget) { 
-            ensureGroup(node, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true }); 
+        clearAllGroups(node);
+        node.loraItems = migrate.length? migrate: [{ key:'', label:'None', sm:1, sc:1, on:true }];
+        // 添加面���部件
+        let panel = node.widgets.find(w=> w instanceof HikazeLoraPanelWidget);
+        if (!panel){
+            panel = new HikazeLoraPanelWidget('lora_panel', { itemsProvider: ()=> node.loraItems });
+            node.widgets.push(panel);
         }
-
-        // Override node serialization to support backend compatibility
+        node.updateLoraPanel = ()=>{ if (panel){ panel.ensureHeight(); try { node.setDirtyCanvas(true,true); }catch(_){} try { if(node.onResize) node.onResize(node.size); }catch(_){} } };
+        node.updateLoraPanel();
+        // 序列化覆盖
         const originalSerialize = node.serialize;
-        node.serialize = function() {
+        node.serialize = function(){
             const data = originalSerialize ? originalSerialize.call(this) : {};
-            
-            // Convert custom widgets to backend-compatible format
             if (!data.inputs) data.inputs = {};
-            
-            // Clear existing lora_* inputs
-            for (const key in data.inputs) {
-                if (key.startsWith('lora_')) {
-                    delete data.inputs[key];
-                }
-            }
-            
-            // Convert custom widgets to backend inputs
-            let loraIndex = 0;
-            if (this.widgets) {
-                for (const w of this.widgets) {
-                    if (w instanceof HikazeLoraRowWidget && w.value && w.value.key) {
-                        const key = w.value.key.trim();
-                        if (key && key.toLowerCase() !== 'none') {
-                            data.inputs[`lora_${loraIndex}`] = key;
-                            data.inputs[`lora_${loraIndex}_on`] = Boolean(w.value.on);
-                            data.inputs[`lora_${loraIndex}_strength_model`] = Number(w.value.sm) || 1.0;
-                            data.inputs[`lora_${loraIndex}_strength_clip`] = Number(w.value.sc) || 1.0;
-                            loraIndex++;
-                        }
-                    }
-                }
-            }
-            
+            for (const k of Object.keys(data.inputs)) if (k.startsWith('lora_')) delete data.inputs[k];
+            let idx=0; for (const it of (this.loraItems||[])){ const key=String(it.key||'').trim(); if(!key || key==='none') continue; data.inputs[`lora_${idx}`]=key; data.inputs[`lora_${idx}_on`]=true; data.inputs[`lora_${idx}_strength_model`]=Number(it.sm)||1; data.inputs[`lora_${idx}_strength_clip`]=Number(it.sc)||1; idx++; }
             return data;
         };
-
-        // Override onPropertyChanged for better integration
-        const originalOnPropertyChanged = node.onPropertyChanged;
-        node.onPropertyChanged = function(name, value) {
-            if (originalOnPropertyChanged) {
-                originalOnPropertyChanged.call(this, name, value);
-            }
-            // Trigger redraw when properties change
-            try { this.setDirtyCanvas(true, true); } catch(_) {}
-        };
-
-        // Override computeSize to account for custom widgets
-        const originalComputeSize = node.computeSize;
-        node.computeSize = function() {
-            if (originalComputeSize) {
-                const baseSize = originalComputeSize.call(this);
-                // Add extra height for custom widgets
-                const customWidgetCount = this.widgets ? this.widgets.filter(w => w instanceof HikazeLoraRowWidget).length : 0;
-                if (customWidgetCount > 0) {
-                    baseSize[1] += customWidgetCount * 35; // Add height for each custom widget
-                }
-                return baseSize;
-            }
-            return [200, 100]; // Default size
-        };
-
-        // Add configure method to load from serialized data
         const originalConfigure = node.configure;
-        node.configure = function(info) {
-            if (originalConfigure) {
-                originalConfigure.apply(this, arguments);
-            }
-            
-            // Load from serialized inputs data
-            if (info.inputs) {
-                this.loadFromInputsData(info.inputs);
-            }
+        node.configure = function(info){ if (originalConfigure) originalConfigure.apply(this, arguments); if (info && info.inputs){ const groups={}; for (const [k,v] of Object.entries(info.inputs)){ const m=k.match(/^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/); if(!m) continue; const i=parseInt(m[1],10); if(!groups[i]) groups[i]={sm:1,sc:1,on:true}; const sub=m[2]; if(!sub){ groups[i].key=v; groups[i].label=v; } else if(sub==='strength_model'){ groups[i].sm=Number(v)||1;} else if(sub==='strength_clip'){ groups[i].sc=Number(v)||1;} else if(sub==='on'){ groups[i].on=!!v; } } node.loraItems=Object.keys(groups).sort((a,b)=>a-b).map(i=>groups[i]); if(!node.loraItems.length) node.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; node.updateLoraPanel&&node.updateLoraPanel(); } };
+        const originalComputeSize = node.computeSize;
+        node.computeSize = function(){
+            const base = originalComputeSize ? originalComputeSize.call(this) : [220,120];
+            // 仅调整最小宽度，不重复叠加高度（LiteGraph 已经包含 widget 高度）
+            const pnl = this.widgets.find(w=> w instanceof HikazeLoraPanelWidget);
+            if (pnl){ base[0] = Math.max(base[0], 380); }
+            return base;
         };
-
-        // Method to load from inputs data
-        node.loadFromInputsData = function(inputs) {
-            if (!inputs) return;
-            
-            clearAllGroups(this);
-            
-            // Group inputs by lora index
-            const loraGroups = {};
-            for (const [key, value] of Object.entries(inputs)) {
-                const match = key.match(/^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/);
-                if (match) {
-                    const idx = parseInt(match[1], 10);
-                    const subkey = match[2] || 'name';
-                    if (!loraGroups[idx]) loraGroups[idx] = {};
-                    loraGroups[idx][subkey] = value;
-                }
-            }
-            
-            // Create widgets from grouped data
-            Object.keys(loraGroups).sort((a, b) => parseInt(a) - parseInt(b)).forEach((idx, widgetIdx) => {
-                const group = loraGroups[idx];
-                if (group.name && group.on !== false) {
-                    ensureGroup(this, widgetIdx, {
-                        key: group.name,
-                        label: group.name,
-                        sm: Number(group.strength_model) || 1.0,
-                        sc: Number(group.strength_clip) || 1.0,
-                        on: Boolean(group.on)
-                    });
-                }
-            });
-            
-            // Add empty placeholder if no widgets
-            if (!this.widgets.some(w => w instanceof HikazeLoraRowWidget)) {
-                ensureGroup(this, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true });
-            }
-        };
-        
-        // Selection entry button
-        const hasButton = node.widgets.some(w => w.name === 'choose_models');
-        if (!hasButton) {
-            const btn = node.addWidget && node.addWidget('button', 'choose_models', t('mm.btn.chooseModelEllipsis'), () => {
-                const requestId = 'sel_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-                const selectedItems = currentSelectedItemsForPreselect(node);
-                const overlay = openModelSelector({ kind: 'lora', requestId, selectedItems });
-                HikazeManager.pending.set(requestId, { node, overlay, mode: 'replace' });
-            }, { serialize: false });
-            if (btn) btn.label = 'choose_models';
+        // 选择按钮
+        if (!node.widgets.some(w=> w.name==='choose_models')){
+            const btn = node.addWidget && node.addWidget('button','choose_models', t('mm.btn.chooseModelEllipsis'), ()=>{ const requestId='sel_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); const selectedItems=currentSelectedItemsForPreselect(node); const overlay=openModelSelector({kind:'lora', requestId, selectedItems}); HikazeManager.pending.set(requestId,{ node, overlay, mode:'replace'}); }, { serialize:false });
+            if (btn) btn.label='choose_models';
         }
-
-        try { node.setDirtyCanvas(true, true); } catch(_) {}
-    } catch(err){
-        console.warn('[Hikaze] enhance power lora node failed:', err);
-    }
+        try { node.setDirtyCanvas(true,true); }catch(_){ }
+    }catch(err){ console.warn('[Hikaze] enhance power lora node failed:', err); }
 }
 
 // ComfyUI extension registration
@@ -847,102 +796,11 @@ console.log('[Hikaze] Extension script loaded');
 
 // Listen for selection results and write back to nodes
 function setupMessageListener(){
-    window.addEventListener('message', (ev)=>{
-        const data = ev && ev.data;
-        if (!data) return;
-        // handle manager close request from iframe
-        if (data.type === 'hikaze-mm-close'){
-            const ov = HikazeManager.modalWindow;
-            if (ov && typeof ov.__hikazeClose === 'function') ov.__hikazeClose();
-            else if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
-            HikazeManager.modalWindow = null;
-            return;
-        }
-        // handle selector cancel (close overlay tied to requestId)
-        if (data.type === 'hikaze-mm-cancel'){
-            const requestId = data.requestId;
-            if (requestId && HikazeManager.pending.has(requestId)){
-                try{
-                    const ctx = HikazeManager.pending.get(requestId);
-                    const overlay = ctx && ctx.overlay;
-                    if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
-                    else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-                } finally {
-                    HikazeManager.pending.delete(requestId);
-                }
-            }
-            return;
-        }
-        if (data.type !== 'hikaze-mm-select') return;
-        const { requestId, payload } = data;
-        const ctx = HikazeManager.pending.get(requestId);
-        if (!ctx) return;
-        try{
-            const { node, wName, wPath, overlay, mode } = ctx;
-            if (payload && (payload.kind === 'lora' || payload.kind === 'loras') && Array.isArray(payload.items) && node && node.comfyClass === 'HikazePowerLoraLoader'){
-                const opMode = (payload.mode === 'append' || mode === 'append') ? 'append' : 'replace';
-                const incoming = (payload.items || []).map(it=>({ 
-                    key: normalizeLoraKey(it && (it.value || it.label || '')), 
-                    label: String((it && (it.label || it.value)) || ''), 
-                    sm: (typeof it.sm==='number'? it.sm: 1.0), 
-                    sc: (typeof it.sc==='number'? it.sc: 1.0),
-                    on: true
-                })).filter(it=>it.key);
-
-                if (opMode === 'replace') {
-                    clearAllGroups(node);
-                }
-
-                // Find the next available index for new widgets
-                let idx = 0;
-                if (opMode === 'append') {
-                    // Count existing custom widgets
-                    idx = node.widgets.filter(w => w instanceof HikazeLoraRowWidget).length;
-                }
-
-                for (const it of incoming){
-                    // Avoid adding duplicates if appending
-                    if (opMode === 'append') {
-                        const existing = currentSelectedKeysForPreselect(node);
-                        if (existing.includes(normalizeLoraKey(it.key))) continue;
-                    }
-                    ensureGroup(node, idx++, it);
-                }
-
-                // If the list is empty after a replace operation, add a placeholder
-                if (opMode === 'replace' && incoming.length === 0) {
-                    ensureGroup(node, 0, { key:'', label:'None', sm:1.0, sc:1.0, on:true });
-                }
-
-                try { node.setDirtyCanvas(true, true); } catch(_) {}
-                try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
-                try { if (node.onResize) node.onResize(node.size); } catch(_) {}
-                if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
-                else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-                return;
-            }
-            const pathVal = payload && payload.value ? String(payload.value) : '';
-            const nameVal = payload && (payload.label || payload.value) ? String(payload.label || payload.value) : '';
-            if (wPath){
-                try { wPath.value = pathVal; } catch(_) {}
-                try { if (wPath.inputEl) wPath.inputEl.value = pathVal; } catch(_) {}
-            }
-            if (wName){
-                try { wName.value = nameVal; } catch(_) {}
-                try { if (wName.inputEl) wName.inputEl.value = nameVal; } catch(_) {}
-                try {
-                    if (wName.element && wName.element.tagName && wName.element.value !== undefined) {
-                        wName.element.value = nameVal;
-                    }
-                } catch(_) {}
-            }
-            try { node.setDirtyCanvas(true, true); } catch(_) {}
-            try { app.graph.setDirtyCanvas(true, true); } catch(_) {}
-            try { if (node.onResize) node.onResize(node.size); } catch(_) {}
-            if (overlay && typeof overlay.__hikazeClose === 'function') overlay.__hikazeClose();
-            else if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        } finally {
-            HikazeManager.pending.delete(requestId);
-        }
+    window.addEventListener('message', (ev)=>{ const data = ev && ev.data; if(!data) return; if(data.type==='hikaze-mm-close'){ const ov=HikazeManager.modalWindow; if(ov && typeof ov.__hikazeClose==='function') ov.__hikazeClose(); else if(ov&&ov.parentNode) ov.parentNode.removeChild(ov); HikazeManager.modalWindow=null; return; }
+        if(data.type==='hikaze-mm-cancel'){ const requestId=data.requestId; if(requestId && HikazeManager.pending.has(requestId)){ try{ const ctx=HikazeManager.pending.get(requestId); const overlay=ctx&&ctx.overlay; if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay);} finally { HikazeManager.pending.delete(requestId);} } return; }
+        if(data.type!=='hikaze-mm-select') return; const { requestId, payload } = data; const ctx = HikazeManager.pending.get(requestId); if(!ctx) return; try{ const { node, wName, wPath, overlay, mode } = ctx; if(payload && (payload.kind==='lora'||payload.kind==='loras') && Array.isArray(payload.items) && node && node.comfyClass==='HikazePowerLoraLoader'){ const opMode=(payload.mode==='append'||mode==='append')?'append':'replace'; const incoming=(payload.items||[]).map(it=>({ key:normalizeLoraKey(it && (it.value||it.label||'')), label:String((it && (it.label||it.value))||''), sm:(typeof it.sm==='number'?it.sm:1), sc:(typeof it.sc==='number'?it.sc:1), on:true })).filter(it=>it.key); if(opMode==='replace') node.loraItems=[]; if(!Array.isArray(node.loraItems)) node.loraItems=[]; const existing=new Set(node.loraItems.map(i=>i.key)); for(const it of incoming){ if(opMode==='append' && existing.has(it.key)) continue; node.loraItems.push(it);} if(!node.loraItems.length) node.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; node.updateLoraPanel && node.updateLoraPanel(); try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} try { if(node.onResize) node.onResize(node.size);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay); return; }
+            const pathVal = payload && payload.value ? String(payload.value):''; const nameVal = payload && (payload.label||payload.value)? String(payload.label||payload.value):''; if(wPath){ try { wPath.value=pathVal;}catch(_){} try { if(wPath.inputEl) wPath.inputEl.value=pathVal;}catch(_){} } if(wName){ try { wName.value=nameVal;}catch(_){} try { if(wName.inputEl) wName.inputEl.value=nameVal;}catch(_){} }
+            try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        } finally { HikazeManager.pending.delete(requestId); }
     });
 }
