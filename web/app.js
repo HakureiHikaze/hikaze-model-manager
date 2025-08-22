@@ -130,7 +130,8 @@
       selectedIds: new Set(), // selected id set for multi-select
       preKeys: preselectedKeys, // preselected identity keys
       strengths: new Map(), // id -> { sm, sc }
-    }
+    },
+    loadSeq: 0 // 新增：请求序列号，��于丢弃过期搜索结果
   };
 
   // DOM
@@ -359,6 +360,8 @@
   async function loadModels(){
     if (state.loading || !state.hasMore) return;
     state.loading = true;
+    const seq = state.loadSeq; // 记录当前请求序列
+    const isFirstPage = state.page === 1; // 本次请求是否第一页
 
     const url = new URL(location.origin + '/models');
     // In selector mode, try to use the real type from /types first; then fall back to normalized kind from URL to restrict the main category
@@ -374,7 +377,14 @@
 
     try {
       const data = await api(url.pathname + '?' + url.searchParams.toString());
+      // 过期请求��输入已变更）直接丢弃
+      if (seq !== state.loadSeq) { state.loading = false; return; }
+
       const newModels = data.items || [];
+      if (isFirstPage) {
+        // 再保险：若是第一页，确保 state.models 已为空（避免竞态）
+        state.models = [];
+      }
       state.models.push(...newModels);
       state.total = data.total || 0;
       state.page++;
@@ -412,11 +422,13 @@
         const found = state.models.find(it=> it && it.id === state.selectedModel.id);
         if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
       }
-      renderModels(true); // Append models
+      // 根据是否第一页决定 append
+      renderModels(!isFirstPage);
     } catch (err) {
       console.error('[HikazeMM] Failed to load models:', err);
     } finally {
-      state.loading = false;
+      // 若已有新序列启动，不回滚 loading 状态（由新请求接管）
+      if (seq === state.loadSeq) state.loading = false;
     }
   }
 
@@ -891,14 +903,14 @@
     });
 
     // Search and Scan
-    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); updateAll(); }, 300), 'searchInput');
+    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); resetAndLoad(); }, 300), 'searchInput');
     bind(el.refreshBtn, 'click', async ()=>{
       try{
         if (!el.refreshBtn) return;
         el.refreshBtn.disabled = true; const old = el.refreshBtn.textContent; el.refreshBtn.textContent = t('mm.scan.starting');
         await apiJSON('POST', '/scan/start', {full: false});
         el.refreshBtn.textContent = t('mm.scan.started');
-        setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; updateAll(); }, 1000);
+        setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; resetAndLoad(); }, 1000);
       }catch(err){
         if (el.refreshBtn) el.refreshBtn.disabled = false; alert(t('mm.scan.startFail') + err.message);
       }
@@ -954,11 +966,15 @@
   }
 
   function resetAndLoad(){
+    state.loadSeq++; // 序列自增，标记之前的请求为过期
     state.page = 1;
     state.models = [];
     state.hasMore = true;
     state.loading = false;
-    if (el.modelsContainer) el.modelsContainer.scrollTop = 0;
+    if (el.modelsContainer){
+      el.modelsContainer.scrollTop = 0;
+      el.modelsContainer.innerHTML = ''; // 立即清空旧 DOM，提升搜索反馈
+    }
     updateAll();
   }
 
