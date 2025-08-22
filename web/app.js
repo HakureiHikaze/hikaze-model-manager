@@ -1142,8 +1142,7 @@
     if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
     const has = !!state.selectedModel;
     if (state.selector.on){
-      el.saveBtn.style.display = 'none';
-      el.revertBtn.style.display = 'none';
+      // 选择器模式：仍显示确认按钮，同时允许对当前预览模型进行编辑保存
       if (el.confirmBtn){
         el.confirmBtn.style.display = '';
         const kind = String(state.selector.kind||'').toLowerCase();
@@ -1157,6 +1156,11 @@
         }
         el.confirmBtn.disabled = !can;
       }
+      // 恢复保存 / 放弃按钮（仅当已选择模型时启用）
+      el.saveBtn.style.display = has ? '' : 'none';
+      el.revertBtn.style.display = has ? '' : 'none';
+      el.saveBtn.disabled = !has;
+      el.revertBtn.disabled = !has;
     } else {
       el.saveBtn.style.display = '';
       el.revertBtn.style.display = '';
@@ -1166,7 +1170,6 @@
     }
     const isLora = !!(state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora'));
     if (state.selector.on){
-      // 显示 / 隐藏新控件
       if (el.clearSelectionBtn){
         el.clearSelectionBtn.style.display = isLora ? '' : 'none';
         el.clearSelectionBtn.disabled = isLora ? (state.selector.selectedIds.size===0) : false;
