@@ -1,9 +1,7 @@
 """
 HikazePowerLoraLoader - Multiple LoRA stacking loader (with bypass)
-- Inputs: MODEL, CLIP (现在为必填)
+- Inputs: MODEL, CLIP (必填) + 动态可选 lora_* 参数
 - Outputs: MODEL, CLIP
-- Widgets: dynamic rows (lora_N, lora_N_on, lora_N_strength_model, lora_N_strength_clip) and top-level bypass
-- Execution: apply LoRA rows in order where on=true; when no CLIP input, clip strength is treated as 0; bypass=True passes through
 """
 from __future__ import annotations
 
@@ -39,7 +37,8 @@ class HikazePowerLoraLoader:
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
             },
-            "optional": {},
+            # 关键修复：允许前端序列化注入任意 lora_* 动态参数
+            "optional": FlexibleOptionalInputType(),
             "hidden": {},
         }
 
@@ -66,7 +65,8 @@ class HikazePowerLoraLoader:
             if sub is None:
                 row["lora"] = v
             elif sub == "on":
-                row["on"] = bool(v)
+                # 修正：显式识别 0 / '0' / False / 'false' 为关闭
+                row["on"] = not (v in (0, "0", False, "false", "False", None))
             elif sub == "strength_model":
                 try:
                     row["strength_model"] = float(v)
