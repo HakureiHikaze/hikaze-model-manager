@@ -117,7 +117,7 @@
     models: [],
     total: 0,
     page: 1,
-    limit: 500,
+    limit: 5000,
     loading: false,
     hasMore: true,
     selectedModel: null,
@@ -127,10 +127,13 @@
       on: selectorMode,
       kind: selectorKind,
       requestId: selectorRequestId,
-      selectedIds: new Set(), // selected id set for multi-select
-      preKeys: preselectedKeys, // preselected identity keys
-      strengths: new Map(), // id -> { sm, sc }
-    }
+      selectedIds: new Set(),
+      preKeys: preselectedKeys,
+      strengths: new Map(),
+      preselectedIds: new Set(), // 新增：记录 URL 传入的预选模型 id
+      filterSelected: false      // 新增：是否只显示已选
+    },
+    loadSeq: 0 // 新增：请求序列号，用于丢弃过期搜索结果
   };
 
   // DOM
@@ -152,6 +155,9 @@
     // toolbar buttons: settings/close
     settingsBtn: document.getElementById('settingsBtn'),
     closeBtn: document.getElementById('closeBtn'),
+    // 新增
+    clearSelectionBtn: document.getElementById('clearSelectionBtn'),
+    filterSelectedCheckbox: document.getElementById('filterSelectedCheckbox'),
   };
 
   // Added: safe binding and logging
@@ -359,6 +365,8 @@
   async function loadModels(){
     if (state.loading || !state.hasMore) return;
     state.loading = true;
+    const seq = state.loadSeq; // 记录当前请求序列
+    const isFirstPage = state.page === 1; // 本次请求是否第一页
 
     const url = new URL(location.origin + '/models');
     // In selector mode, try to use the real type from /types first; then fall back to normalized kind from URL to restrict the main category
@@ -374,7 +382,14 @@
 
     try {
       const data = await api(url.pathname + '?' + url.searchParams.toString());
+      // 过期请求��输入已变更）直接丢弃
+      if (seq !== state.loadSeq) { state.loading = false; return; }
+
       const newModels = data.items || [];
+      if (isFirstPage) {
+        // 再保险：若是第一页，确保 state.models 已为空（避免竞态）
+        state.models = [];
+      }
       state.models.push(...newModels);
       state.total = data.total || 0;
       state.page++;
@@ -382,10 +397,11 @@
 
       // map preselected keys for lora
       if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && state.selector.preKeys && state.selector.preKeys.size){
-        for (const m of newModels){ // Only check new models
+        for (const m of newModels){
           const key = identityForModel(m);
           if (key && state.selector.preKeys.has(key)){
             state.selector.selectedIds.add(m.id);
+            state.selector.preselectedIds.add(m.id); // 记录为“预选”
             if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
           }
         }
@@ -400,6 +416,7 @@
             const preselected = preselectedItems.find(item => normalizeKey(item.key) === key);
             if (preselected) {
               state.selector.selectedIds.add(m.id);
+              state.selector.preselectedIds.add(m.id); // 记录为“预选”
               state.selector.strengths.set(m.id, {
                 sm: Number(preselected.sm) || 1.0,
                 sc: Number(preselected.sc) || 1.0
@@ -412,11 +429,13 @@
         const found = state.models.find(it=> it && it.id === state.selectedModel.id);
         if (found) state.originalDetail = JSON.parse(JSON.stringify(found));
       }
-      renderModels(true); // Append models
+      // 根据是否第一页决定 append
+      renderModels(!isFirstPage);
     } catch (err) {
       console.error('[HikazeMM] Failed to load models:', err);
     } finally {
-      state.loading = false;
+      // 若已有新序列启动，不回滚 loading 状态（由新请求接管）
+      if (seq === state.loadSeq) state.loading = false;
     }
   }
 
@@ -480,13 +499,35 @@
       el.modelsContainer.innerHTML = '';
     }
 
-    const modelsToRender = append ? state.models.slice(-state.limit) : state.models;
+    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
+
+    // 过滤：只显示已选
+    let baseList = state.models;
+    if (state.selector.on && state.selector.filterSelected){
+      if (isLoraSelector){
+        baseList = baseList.filter(m=> state.selector.selectedIds.has(m.id));
+      }else{
+        baseList = state.selectedModel ? baseList.filter(m=> m.id === state.selectedModel.id) : [];
+      }
+      append = false; // 过滤模式强制全量渲染
+    }
+
+    // 预选排序：预选 LoRA 置前（保持各自内部原顺序），不影响后续用户新增选择顺序
+    if (isLoraSelector && state.selector.preselectedIds.size){
+      const pre = [], rest = [];
+      for (const m of baseList){
+        (state.selector.preselectedIds.has(m.id) ? pre : rest).push(m);
+      }
+      baseList = pre.concat(rest);
+      append = false; // 排序后需全量渲染
+    }
+
+    const modelsToRender = append ? baseList.slice(-state.limit) : baseList;
 
     if (!append && !modelsToRender.length){
       el.modelsContainer.appendChild(h('div', {class:'empty'}, t('mm.empty')));
       return;
     }
-    const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
     const stop = (e)=>{ try{ e.stopPropagation(); }catch(_){} };
     const includeModel = (m)=>{ if (!state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.add(m.id); if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 }); } };
     const removeModel = (m)=>{ if (state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.delete(m.id); state.selector.strengths.delete(m.id); } };
@@ -891,14 +932,14 @@
     });
 
     // Search and Scan
-    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); updateAll(); }, 300), 'searchInput');
+    bind(el.searchInput, 'input', debounce(()=>{ state.q = (el.searchInput && el.searchInput.value || '').trim(); resetAndLoad(); }, 300), 'searchInput');
     bind(el.refreshBtn, 'click', async ()=>{
       try{
         if (!el.refreshBtn) return;
         el.refreshBtn.disabled = true; const old = el.refreshBtn.textContent; el.refreshBtn.textContent = t('mm.scan.starting');
         await apiJSON('POST', '/scan/start', {full: false});
         el.refreshBtn.textContent = t('mm.scan.started');
-        setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; updateAll(); }, 1000);
+        setTimeout(()=>{ if (!el.refreshBtn) return; el.refreshBtn.textContent = old; el.refreshBtn.disabled = false; resetAndLoad(); }, 1000);
       }catch(err){
         if (el.refreshBtn) el.refreshBtn.disabled = false; alert(t('mm.scan.startFail') + err.message);
       }
@@ -907,6 +948,27 @@
     // Save/Revert
     bind(el.saveBtn, 'click', ()=>{ saveDetail().catch(err=>alert(t('mm.save.fail')+err.message)); }, 'saveBtn');
     bind(el.revertBtn, 'click', ()=> revertDetail(), 'revertBtn');
+
+    // 新增：取消全部选择
+    bind(el.clearSelectionBtn, 'click', ()=>{
+      if (!state.selector.on) return;
+      if ((state.selector.kind||'').toLowerCase().startsWith('lora')){
+        state.selector.selectedIds.clear();
+        state.selector.strengths.clear();
+      }else{
+        state.selectedModel = null;
+        state.originalDetail = null;
+      }
+      updateActionsState();
+      renderDetail();
+      renderModels(false);
+    }, 'clearSelectionBtn');
+
+    // 新增：筛选已选
+    bind(el.filterSelectedCheckbox, 'change', ()=>{
+      state.selector.filterSelected = !!el.filterSelectedCheckbox.checked;
+      renderModels(false);
+    }, 'filterSelectedCheckbox');
 
     updateActionsState();
   }
@@ -937,6 +999,24 @@
       el.revertBtn.disabled = !has;
       if (el.confirmBtn) el.confirmBtn.style.display = 'none';
     }
+    const isLora = !!(state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora'));
+    if (state.selector.on){
+      // 显示 / 隐藏新控件
+      if (el.clearSelectionBtn){
+        el.clearSelectionBtn.style.display = isLora ? '' : 'none';
+        el.clearSelectionBtn.disabled = isLora ? (state.selector.selectedIds.size===0) : false;
+      }
+      if (el.filterSelectedCheckbox){
+        el.filterSelectedCheckbox.parentElement.style.display = '';
+        el.filterSelectedCheckbox.checked = !!state.selector.filterSelected;
+      }
+    }else{
+      if (el.clearSelectionBtn) el.clearSelectionBtn.style.display = 'none';
+      if (el.filterSelectedCheckbox){
+        el.filterSelectedCheckbox.parentElement.style.display = 'none';
+        el.filterSelectedCheckbox.checked = false;
+      }
+    }
   }
 
   // Ensure view mode buttons reflect current state
@@ -954,11 +1034,15 @@
   }
 
   function resetAndLoad(){
+    state.loadSeq++; // 序列自增，标记之前的请求为过期
     state.page = 1;
     state.models = [];
     state.hasMore = true;
     state.loading = false;
-    if (el.modelsContainer) el.modelsContainer.scrollTop = 0;
+    if (el.modelsContainer){
+      el.modelsContainer.scrollTop = 0;
+      el.modelsContainer.innerHTML = ''; // 立即清空旧 DOM，提升搜索反馈
+    }
     updateAll();
   }
 

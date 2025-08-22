@@ -73,5 +73,7 @@
   "mm.settings": "Settings",
   "mm.settings.category": "Hikaze Model Manager",
   "mm.settings.lang.name": "Language",
-  "mm.settings.lang.system": "Follow system"
+  "mm.settings.lang.system": "Follow system",
+  "mm.btn.clearSelection": "Clear Selection",
+  "mm.filter.selectedOnly": "Selected Only"
 }
