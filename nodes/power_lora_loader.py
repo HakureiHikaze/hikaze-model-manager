@@ -1,6 +1,6 @@
 """
 HikazePowerLoraLoader - Multiple LoRA stacking loader (with bypass)
-- Inputs: optional MODEL/CLIP
+- Inputs: MODEL, CLIP (现在为必填)
 - Outputs: MODEL, CLIP
 - Widgets: dynamic rows (lora_N, lora_N_on, lora_N_strength_model, lora_N_strength_clip) and top-level bypass
 - Execution: apply LoRA rows in order where on=true; when no CLIP input, clip strength is treated as 0; bypass=True passes through
@@ -35,8 +35,11 @@ class HikazePowerLoraLoader:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {},
-            "optional": FlexibleOptionalInputType(),
+            "required": {
+                "model": ("MODEL",),
+                "clip": ("CLIP",),
+            },
+            "optional": {},
             "hidden": {},
         }
 
@@ -44,7 +47,7 @@ class HikazePowerLoraLoader:
     RETURN_NAMES = ("MODEL", "CLIP")
     FUNCTION = "load_loras"
     CATEGORY = "hikaze/loaders"
-    DESCRIPTION = "批量加载多条 LoRA；支持旁路，行序叠加；无 CLIP 输入时 clip 强度自动为 0"
+    DESCRIPTION = "批量加载多条 LoRA；模型与 CLIP 现在为必填输入；行序叠加；bypass=True 时直接透传"
 
     @staticmethod
     def _collect_rows(kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -110,7 +113,7 @@ class HikazePowerLoraLoader:
                 return loras[i]
         return None
 
-    def load_loras(self, model=None, clip=None, **kwargs):
+    def load_loras(self, model, clip, **kwargs):
         # Bypass: support frontend-injected boolean 'bypass'
         bypass = bool(kwargs.get("bypass", False))
         if bypass:
