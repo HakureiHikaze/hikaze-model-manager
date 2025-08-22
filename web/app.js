@@ -131,7 +131,8 @@
       preKeys: preselectedKeys,
       strengths: new Map(),
       preselectedIds: new Set(), // 新增：记录 URL 传入的预选模型 id
-      filterSelected: false      // 新增：是否只显示已选
+      filterSelected: false,     // 新增：是否只显示已选
+      selectedCache: new Map(),  // 新增：缓存已选模型（即使搜索/筛选后不再返回也保留）
     },
     loadSeq: 0 // 新增：请求序列号，用于丢弃过期搜索结果
   };
@@ -401,28 +402,33 @@
           const key = identityForModel(m);
           if (key && state.selector.preKeys.has(key)){
             state.selector.selectedIds.add(m.id);
-            state.selector.preselectedIds.add(m.id); // 记录为“预选”
+            state.selector.preselectedIds.add(m.id);
             if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
+            state.selector.selectedCache.set(m.id, m); // 缓存
           }
         }
       }
-
-      // map preselected items with strength data for lora
       if (state.selector.on && (state.selector.kind||'').toLowerCase().startsWith('lora') && preselectedItems.length) {
         for (const m of newModels) {
           const key = identityForModel(m);
-          if (key) {
-            // Find matching preselected item
-            const preselected = preselectedItems.find(item => normalizeKey(item.key) === key);
-            if (preselected) {
-              state.selector.selectedIds.add(m.id);
-              state.selector.preselectedIds.add(m.id); // 记录为“预选”
-              state.selector.strengths.set(m.id, {
-                sm: Number(preselected.sm) || 1.0,
-                sc: Number(preselected.sc) || 1.0
-              });
-            }
+          if (!key) continue;
+          const preselected = preselectedItems.find(item => normalizeKey(item.key) === key);
+          if (preselected) {
+            state.selector.selectedIds.add(m.id);
+            state.selector.preselectedIds.add(m.id);
+            state.selector.strengths.set(m.id, {
+              sm: Number(preselected.sm) || 1.0,
+              sc: Number(preselected.sc) || 1.0
+            });
+            state.selector.selectedCache.set(m.id, m); // 缓存
           }
+        }
+      }
+      // 若之前已选（用户手动选择）且刚好出现在新结果里，则刷新缓存对象
+      if (state.selector.on){
+        for (const m of newModels){
+          if (state.selector.selectedIds.has(m.id)) state.selector.selectedCache.set(m.id, m);
+          if (state.selectedModel && state.selectedModel.id === m.id) state.selector.selectedCache.set(m.id, m);
         }
       }
       if (state.selectedModel) {
@@ -501,36 +507,60 @@
 
     const isLoraSelector = !!(state.selector.on && String(state.selector.kind||'').toLowerCase().startsWith('lora'));
 
+    // 基础列表副本
+    let baseList = state.models.slice();
+
+    // 合并缓存：确保所有已选 / 预选模型始终存在于渲染集合
+    if (state.selector.on && state.selector.selectedCache.size){
+      const existing = new Set(baseList.map(m=>m.id));
+      state.selector.selectedCache.forEach((m,id)=>{
+        if (!existing.has(id)) baseList.push(m);
+      });
+      append = false; // 结构变化需全量重绘
+    }
+
     // 过滤：只显示已选
-    let baseList = state.models;
     if (state.selector.on && state.selector.filterSelected){
       if (isLoraSelector){
         baseList = baseList.filter(m=> state.selector.selectedIds.has(m.id));
       }else{
         baseList = state.selectedModel ? baseList.filter(m=> m.id === state.selectedModel.id) : [];
       }
-      append = false; // 过滤模式强制全量渲染
+      append = false;
     }
 
-    // 预选排序：预选 LoRA 置前（保持各自内部原顺序），不影响后续用户新增选择顺序
+    // 预选排序
     if (isLoraSelector && state.selector.preselectedIds.size){
       const pre = [], rest = [];
       for (const m of baseList){
         (state.selector.preselectedIds.has(m.id) ? pre : rest).push(m);
       }
       baseList = pre.concat(rest);
-      append = false; // 排序后需全量渲染
+      append = false;
     }
 
+    if (!append) el.modelsContainer.innerHTML = '';
     const modelsToRender = append ? baseList.slice(-state.limit) : baseList;
-
     if (!append && !modelsToRender.length){
       el.modelsContainer.appendChild(h('div', {class:'empty'}, t('mm.empty')));
       return;
     }
     const stop = (e)=>{ try{ e.stopPropagation(); }catch(_){} };
-    const includeModel = (m)=>{ if (!state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.add(m.id); if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 }); } };
-    const removeModel = (m)=>{ if (state.selector.selectedIds.has(m.id)){ state.selector.selectedIds.delete(m.id); state.selector.strengths.delete(m.id); } };
+    const includeModel = (m)=>{
+      if (!state.selector.selectedIds.has(m.id)){
+        state.selector.selectedIds.add(m.id);
+        if (!state.selector.strengths.has(m.id)) state.selector.strengths.set(m.id, { sm: 1.0, sc: 1.0 });
+      }
+      // 缓存最新对象
+      state.selector.selectedCache.set(m.id, m);
+    };
+    const removeModel = (m)=>{
+      if (state.selector.selectedIds.has(m.id)){
+        state.selector.selectedIds.delete(m.id);
+        state.selector.strengths.delete(m.id);
+      }
+      state.selector.selectedCache.delete(m.id);
+    };
     const createStrengthControls = (m)=>{
       const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
       const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
@@ -632,6 +662,8 @@
   function selectModel(m){
     state.selectedModel = JSON.parse(JSON.stringify(m));
     state.originalDetail = JSON.parse(JSON.stringify(m));
+    // 缓存（单选情况下也保留，防止搜索后消失）
+    if (state.selector.on) state.selector.selectedCache.set(m.id, m);
     renderDetail();
     renderModels();
   }
@@ -955,7 +987,9 @@
       if ((state.selector.kind||'').toLowerCase().startsWith('lora')){
         state.selector.selectedIds.clear();
         state.selector.strengths.clear();
+        state.selector.selectedCache.clear(); // 清空缓存
       }else{
+        if (state.selectedModel) state.selector.selectedCache.delete(state.selectedModel.id);
         state.selectedModel = null;
         state.originalDetail = null;
       }
