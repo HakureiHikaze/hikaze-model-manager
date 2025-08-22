@@ -91,5 +91,19 @@
   "mm.settings.lang.name": "语言",
   "mm.settings.lang.system": "跟随系统",
   "mm.btn.clearSelection": "清除选择",
-  "mm.filter.selectedOnly": "仅显示已选择"
+  "mm.filter.selectedOnly": "仅显示已选择",
+  "mm.settings.windowTitle": "设置",
+  "mm.settings.cat.general": "通用",
+  "mm.settings.cat.tools": "工具",
+  "mm.settings.language": "语言",
+  "mm.settings.save": "保存",
+  "mm.settings.discard": "不保存并退出",
+  "mm.settings.unsaved": "* 未保存",
+  "mm.settings.quickTag.button": "快速设置 Tag",
+  "mm.settings.quickTag.tooltip": "根据目录名称快速为所有模型添加标签",
+  "mm.settings.quickTag.running": "正在批量添加标签…",
+  "mm.settings.quickTag.done": "批量添加完成",
+  "mm.settings.quickTag.failed": "批量添加失败",
+  "mm.settings.quickTag.progress": "进度",
+  "mm.settings.quickTag.cancel": "取消任务"
 }

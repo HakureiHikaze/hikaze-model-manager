@@ -25,6 +25,7 @@ try:
         serve_media_file as _serve_media_file,
     )  # type: ignore
     from .handlers import system as h_system, scan as h_scan, tags as h_tags, models as h_models  # type: ignore
+    from .handlers import settings as h_settings  # type: ignore
     from .permissions import check_permission as _check_permission  # type: ignore
 except Exception:
     # Local imports fallback when running as a plain script
@@ -47,6 +48,7 @@ except Exception:
     _handlers_scan = _load_local("hikaze_mm_handlers_scan", os.path.join("handlers", "scan.py"))
     _handlers_tags = _load_local("hikaze_mm_handlers_tags", os.path.join("handlers", "tags.py"))
     _handlers_models = _load_local("hikaze_mm_handlers_models", os.path.join("handlers", "models.py"))
+    _handlers_settings = _load_local("hikaze_mm_handlers_settings", os.path.join("handlers", "settings.py"))
     _perms = _load_local("hikaze_mm_permissions", "permissions.py")
 
     _json_dumps = _utils.json_dumps_bytes
@@ -57,6 +59,7 @@ except Exception:
     h_scan = _handlers_scan
     h_tags = _handlers_tags
     h_models = _handlers_models
+    h_settings = _handlers_settings
     _check_permission = _perms.check_permission
 
 
@@ -161,6 +164,17 @@ class ApiHandler(SimpleHTTPRequestHandler):
             h_tags.list_all(self)
             return
 
+        # Settings
+        if path == "/settings":
+            h_settings.get_settings(self)
+            return
+
+        # Task status
+        m = re.match(r"^/tasks/([0-9a-fA-F]{32})$", path)
+        if m:
+            h_settings.get_job_status(self, m.group(1))
+            return
+
         # static: /web/*
         if path == "/":
             self.send_response(301)
@@ -195,9 +209,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if path == "/scan/start":
             h_scan.start(self, _scanner, data)
             return
-
-        if path == "/scan/stop":
-            h_scan.stop(self, _scanner)
+        if path == "/settings":
+            h_settings.update_settings(self, data)
+            return
+        if path == "/tasks/quick-tag":
+            h_settings.start_quick_tag(self, _cfg)
             return
 
         if path == "/tags":
@@ -253,6 +269,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
         """
         parsed = urlparse(self.path)
         path = parsed.path or "/"
+
+        # Cancel job
+        m = re.match(r"^/tasks/([0-9a-fA-F]{32})$", path)
+        if m:
+            h_settings.cancel_job(self, m.group(1))
+            return
 
         # Permission check hook (reserved)
         if not _check_permission("delete", path):

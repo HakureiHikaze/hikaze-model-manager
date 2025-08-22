@@ -75,5 +75,19 @@
   "mm.settings.lang.name": "Language",
   "mm.settings.lang.system": "Follow system",
   "mm.btn.clearSelection": "Clear Selection",
-  "mm.filter.selectedOnly": "Selected Only"
+  "mm.filter.selectedOnly": "Selected Only",
+  "mm.settings.windowTitle": "Settings",
+  "mm.settings.cat.general": "General",
+  "mm.settings.cat.tools": "Tools",
+  "mm.settings.language": "Language",
+  "mm.settings.save": "Save",
+  "mm.settings.discard": "Discard Without Save",
+  "mm.settings.unsaved": "* Unsaved",
+  "mm.settings.quickTag.button": "Quick Tagging",
+  "mm.settings.quickTag.tooltip": "Derive tags from directory structure for all models",
+  "mm.settings.quickTag.running": "Batch tagging…",
+  "mm.settings.quickTag.done": "Batch tagging done",
+  "mm.settings.quickTag.failed": "Batch tagging failed",
+  "mm.settings.quickTag.progress": "Progress",
+  "mm.settings.quickTag.cancel": "Cancel Task"
 }

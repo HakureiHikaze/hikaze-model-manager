@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS model_tags (
   FOREIGN KEY(model_id) REFERENCES models(id) ON DELETE CASCADE,
   FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
+
+-- New: generic app settings key/value table
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 """
 
 
@@ -137,6 +143,11 @@ def init_db() -> None:
                 conn.execute("INSERT OR IGNORE INTO tags(name, created_at) VALUES (?,?)", (t, now))
             except sqlite3.Error:
                 pass
+        # ensure default language setting if absent
+        try:
+            conn.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES('language', 'zh-CN')")
+        except sqlite3.Error:
+            pass
 
 
 # --- Tag helpers ---
@@ -482,100 +493,28 @@ def tag_facets(*, type_: Optional[str] = None, q: Optional[str] = None,
     return [{"id": r["id"], "name": r["name"], "color": r["color"], "count": r["count"]} for r in cur.fetchall()]
 
 
-def list_tags() -> List[Dict[str, Any]]:
-    """List all tags with their usage counts."""
-    conn = get_conn()
-    cur = conn.execute("""
-        SELECT t.id, t.name, t.color, t.created_at, COUNT(mt.model_id) AS count
-        FROM tags t
-        LEFT JOIN model_tags mt ON t.id = mt.tag_id
-        GROUP BY t.id, t.name, t.color, t.created_at
-        ORDER BY t.name ASC
-    """)
-    return [{"id": r["id"], "name": r["name"], "color": r["color"],
-             "created_at": r["created_at"], "count": r["count"]} for r in cur.fetchall()]
 
+# --- Settings helpers ---
 
-def create_tag(name: str, color: Optional[str] = None) -> Dict[str, Any]:
-    """Create a new tag."""
-    name = name.strip().lower()
-    if not name:
-        raise ValueError("Tag name cannot be empty")
-
-    conn = get_conn()
-    now = int(time.time() * 1000)
-
-    with conn:
-        # Check existence
-        cur = conn.execute("SELECT * FROM tags WHERE name = ?", (name,))
-        existing = cur.fetchone()
-        if existing:
-            raise ValueError(f"Tag '{name}' already exists")
-
-        # Create the tag
-        cur = conn.execute(
-            "INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)",
-            (name, color, now)
-        )
-        tag_id = cur.lastrowid
-
-        # Return created tag
-        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
-        return dict(cur.fetchone())
-
-
-def update_tag(tag_id: int, name: Optional[str] = None, color: Optional[str] = None) -> Dict[str, Any]:
-    """Update an existing tag."""
-    conn = get_conn()
-
-    with conn:
-        # Check existence
-        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
-        existing = cur.fetchone()
-        if not existing:
-            raise KeyError(f"Tag with id {tag_id} not found")
-
-        # Update fields
-        updates = []
-        args = []
-
-        if name is not None:
-            name = name.strip().lower()
-            if not name:
-                raise ValueError("Tag name cannot be empty")
-            updates.append("name = ?")
-            args.append(name)
-
-        if color is not None:
-            updates.append("color = ?")
-            args.append(color)
-
-        if updates:
-            sql = f"UPDATE tags SET {', '.join(updates)} WHERE id = ?"
-            args.append(tag_id)
-            conn.execute(sql, args)
-
-        # Return updated tag
-        cur = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
-        return dict(cur.fetchone())
-
-
-def delete_tag(tag_id: int) -> None:
-    """Delete a tag and all its associations."""
-    conn = get_conn()
-
-    with conn:
-        # Ensure the tag exists
-        cur = conn.execute("SELECT name FROM tags WHERE id = ?", (tag_id,))
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        cur = get_conn().execute("SELECT value FROM app_settings WHERE key=?", (key,))
         row = cur.fetchone()
-        if not row:
-            raise KeyError(f"Tag with id {tag_id} not found")
+        if row:
+            return row.get("value")
+    except sqlite3.Error:
+        return default
+    return default
 
-        # Guard against deleting system tags
-        tag_name = row["name"]
-        if tag_name in SYSTEM_TAGS:
-            raise ValueError(f"Cannot delete system tag '{tag_name}'")
 
-        # Delete relations and the tag itself
-        conn.execute("DELETE FROM model_tags WHERE tag_id = ?", (tag_id,))
-        conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+def set_setting(key: str, value: str) -> None:
+    with get_conn():
+        get_conn().execute("INSERT INTO app_settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+
+def list_settings() -> Dict[str, str]:
+    cur = get_conn().execute("SELECT key, value FROM app_settings")
+    out: Dict[str, str] = {}
+    for r in cur.fetchall():
+        out[str(r.get("key"))] = str(r.get("value"))
+    return out

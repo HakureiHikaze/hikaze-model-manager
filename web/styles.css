@@ -82,7 +82,24 @@
 .btn{padding:6px 10px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;transition:background .15s ease,transform .05s ease,border-color .15s ease}
 .btn:hover{background:#2a2f36;border-color:#3a3f46}
 .btn:disabled{opacity:.6;cursor:not-allowed}
+.btn.primary{background:#1f6feb;border-color:#388bfd;color:#fff}
+.btn.primary:hover{background:#2b78ff;border-color:#4d8dff}
 
+/* Settings overlay */
+.mm-settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:24px}
+.mm-settings-window{width:600px;max-width:90vw;max-height:80vh;background:#0d1117;border:1px solid #30363d;border-radius:12px;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+.mm-settings-header{padding:12px 16px;border-bottom:1px solid #30363d;font-weight:600;font-size:16px;display:flex;align-items:center;gap:12px}
+.mm-settings-header .title{flex:1;text-align:center;color:#e6edf3}
+.mm-settings-header .unsaved-flag{font-size:12px;color:#d29922}
+.mm-settings-body{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:28px}
+.mm-settings-cat-title{font-size:15px;font-weight:700;text-decoration:underline;margin-bottom:8px;color:#f0f6fc}
+.mm-settings-item{display:flex;align-items:center;gap:12px;margin:6px 0;padding-left:16px}
+.mm-settings-label{min-width:72px;color:#8b949e;font-size:13px}
+.mm-settings-select{flex:1;padding:6px 8px;border:1px solid #30363d;border-radius:6px;background:#0f141a;color:#c9d1d9}
+.mm-settings-select:focus{outline:2px solid #1f6feb;outline-offset:2px}
+.mm-settings-inline-status{font-size:12px;color:#8b949e;min-height:16px}
+.mm-settings-footer{padding:12px 16px;border-top:1px solid #30363d;display:flex;align-items:center;gap:12px}
+.mm-settings-status{font-size:12px;color:#8b949e;min-width:160px}
 
 /* Non-agent edits */
 .detailName{color:#e6edf3 !important;}

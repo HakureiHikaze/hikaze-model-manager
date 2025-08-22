@@ -908,6 +908,137 @@
     }catch(_){ }
   }
 
+  const settingsState = {
+    loaded: false,
+    original: {},
+    current: { language: null },
+    dirty: false,
+    job: null,
+    jobPollTimer: null,
+  };
+
+  function openSettingsWindow(){
+    if (document.getElementById('mm-settings-overlay')) return; // already open
+    const overlay = h('div', {id:'mm-settings-overlay', class:'mm-settings-overlay'});
+    const win = h('div', {class:'mm-settings-window'});
+    const header = h('div', {class:'mm-settings-header'}, [ h('div', {class:'title', 'data-i18n':'mm.settings.windowTitle'}, t('mm.settings.windowTitle')), h('div', {class:'unsaved-flag', style:'display:none'}, t('mm.settings.unsaved')) ]);
+    const body = h('div', {class:'mm-settings-body'});
+    const footer = h('div', {class:'mm-settings-footer'});
+
+    // General category
+    const generalCat = h('div', {class:'mm-settings-cat'});
+    const generalTitle = h('div', {class:'mm-settings-cat-title', 'data-i18n':'mm.settings.cat.general'}, t('mm.settings.cat.general'));
+    const langRow = h('div', {class:'mm-settings-item'});
+    const langLabel = h('label', {class:'mm-settings-label', 'data-i18n':'mm.settings.language'}, t('mm.settings.language'));
+    const langSelect = h('select', {class:'mm-settings-select'});
+    const langs = [ ['zh-CN','中文 (简体)'], ['en-US','English'] ];
+    langs.forEach(([val, label])=>{ langSelect.appendChild(h('option', {value: val}, label)); });
+    langSelect.addEventListener('change', ()=>{ settingsState.current.language = langSelect.value; updateSettingsDirty(); });
+    langRow.append(langLabel, langSelect);
+    generalCat.append(generalTitle, langRow);
+
+    // Tools category
+    const toolsCat = h('div', {class:'mm-settings-cat'});
+    const toolsTitle = h('div', {class:'mm-settings-cat-title', 'data-i18n':'mm.settings.cat.tools'}, t('mm.settings.cat.tools'));
+    const quickRow = h('div', {class:'mm-settings-item'});
+    const quickBtn = h('button', {class:'btn', 'data-i18n':'mm.settings.quickTag.button', title: t('mm.settings.quickTag.tooltip')}, t('mm.settings.quickTag.button'));
+    const quickStatus = h('span', {class:'mm-settings-inline-status'});
+    quickBtn.addEventListener('mouseenter', ()=>{ quickBtn.setAttribute('title', t('mm.settings.quickTag.tooltip')); });
+    quickBtn.addEventListener('click', ()=> startQuickTag(quickBtn, quickStatus));
+    quickRow.append(quickBtn, quickStatus);
+    toolsCat.append(toolsTitle, quickRow);
+
+    body.append(generalCat, toolsCat);
+
+    // Footer buttons
+    const statusBox = h('div', {class:'mm-settings-status'});
+    const saveBtn = h('button', {class:'btn primary', 'data-i18n':'mm.settings.save'}, t('mm.settings.save'));
+    const discardBtn = h('button', {class:'btn', 'data-i18n':'mm.settings.discard'}, t('mm.settings.discard'));
+
+    saveBtn.addEventListener('click', async ()=>{ await saveSettings({ reloadOnLangChange: true }); closeSettingsWindow(); });
+    discardBtn.addEventListener('click', ()=>{ closeSettingsWindow(); });
+    footer.append(statusBox, h('div', {style:'flex:1'}), discardBtn, saveBtn);
+
+    win.append(header, body, footer);
+    overlay.appendChild(win);
+    document.body.appendChild(overlay);
+    I18N.apply(win);
+    loadSettingsIntoUI(langSelect, statusBox, header.querySelector('.unsaved-flag'));
+  }
+
+  function closeSettingsWindow(){
+    if (settingsState.jobPollTimer){ clearInterval(settingsState.jobPollTimer); settingsState.jobPollTimer = null; }
+    const ov = document.getElementById('mm-settings-overlay');
+    if (ov) ov.remove();
+  }
+
+  async function loadSettingsIntoUI(langSelect, statusBox, unsavedFlag){
+    try {
+      const r = await fetch('/settings');
+      if (r.ok){
+        const js = await r.json();
+        const s = js.settings || {};
+        settingsState.loaded = true;
+        settingsState.original = { language: s.language || I18N.lang };
+        settingsState.current = { language: settingsState.original.language };
+        if (langSelect){ langSelect.value = settingsState.current.language; }
+      }
+    } catch(e){ console.warn('[HikazeMM] load settings failed', e); }
+    updateSettingsDirty(unsavedFlag);
+  }
+
+  function updateSettingsDirty(unsavedFlag){
+    settingsState.dirty = (settingsState.loaded && settingsState.current.language !== settingsState.original.language);
+    const flagEl = unsavedFlag || (document.querySelector('#mm-settings-overlay .unsaved-flag'));
+    if (flagEl){ flagEl.style.display = settingsState.dirty ? '' : 'none'; }
+  }
+
+  async function saveSettings(opts){
+    if (!settingsState.dirty) return true;
+    try {
+      const payload = { language: settingsState.current.language };
+      const r = await fetch('/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      settingsState.original.language = settingsState.current.language;
+      settingsState.dirty = false;
+      if (opts && opts.reloadOnLangChange && settingsState.original.language !== I18N.lang){
+        const url = new URL(location.href); url.searchParams.set('lang', settingsState.original.language); location.href = url.toString();
+      }
+      return true;
+    }catch(err){ alert('Save failed: '+ err.message); return false; }
+  }
+
+  function startQuickTag(btn, statusSpan){
+    if (settingsState.job && settingsState.job.status === 'running') return;
+    btn.disabled = true; btn.textContent = t('mm.settings.quickTag.running');
+    statusSpan.textContent = '';
+    fetch('/tasks/quick-tag', {method:'POST'}).then(r=>r.json()).then(js=>{
+      settingsState.job = js.job;
+      pollQuickTag(btn, statusSpan);
+      settingsState.jobPollTimer = setInterval(()=> pollQuickTag(btn, statusSpan), 1000);
+    }).catch(err=>{
+      btn.disabled = false; btn.textContent = t('mm.settings.quickTag.failed'); statusSpan.textContent = err.message;
+    });
+  }
+
+  function pollQuickTag(btn, statusSpan){
+    if (!settingsState.job) return;
+    fetch('/tasks/' + settingsState.job.id).then(r=>r.json()).then(js=>{
+      const job = js.job; settingsState.job = job;
+      const prog = job.progress || 0;
+      statusSpan.textContent = `${t('mm.settings.quickTag.progress')}: ${prog}% (${job.processed||0}/${job.total||0})`;
+      if (job.status === 'success'){
+        btn.disabled = false; btn.textContent = t('mm.settings.quickTag.done');
+        clearInterval(settingsState.jobPollTimer); settingsState.jobPollTimer = null;
+        setTimeout(()=>{ btn.textContent = t('mm.settings.quickTag.button'); }, 3000);
+      } else if (job.status === 'failed'){
+        btn.disabled = false; btn.textContent = t('mm.settings.quickTag.failed');
+        clearInterval(settingsState.jobPollTimer); settingsState.jobPollTimer = null;
+      }
+    }).catch(err=>{ console.warn('poll quick tag failed', err); });
+  }
+
+  // boot sequence
   async function boot(){
     console.debug('[HikazeMM] boot start');
     await I18N.init();
@@ -943,7 +1074,7 @@
     }
     // Settings button placeholder (no-op currently)
     if (el.settingsBtn){
-      el.settingsBtn.addEventListener('click', (e)=>{ e.preventDefault(); /* TODO: open settings in future */ });
+      el.settingsBtn.addEventListener('click', (e)=>{ e.preventDefault(); openSettingsWindow(); });
     }
     console.debug('[HikazeMM] boot done');
   }
