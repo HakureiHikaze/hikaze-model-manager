@@ -696,6 +696,42 @@ function enhanceCheckpointSelectorNode(node){
     }
 }
 
+function syncHiddenLoraWidgets(node){
+    try{
+        if (!node) return;
+        if (!Array.isArray(node.widgets)) node.widgets = [];
+        // 保留：panel, choose button, 其它非 lora_*；移除旧 lora_* 隐藏项
+        node.widgets = node.widgets.filter(w=>{
+            if (!w) return false;
+            if (w instanceof HikazeLoraPanelWidget) return true;
+            const n = w.name || w.label;
+            if (n === 'choose_models') return true;
+            if (/^lora_\d+(?:(_on|_strength_model|_strength_clip))?$/.test(String(n))) return false;
+            return true;
+        });
+        const panel = node.widgets.find(w=> w instanceof HikazeLoraPanelWidget);
+        // 插入隐藏widgets 紧跟 panel 之后（若存在）
+        let insertIndex = panel ? (node.widgets.indexOf(panel)+1) : node.widgets.length;
+        const list = Array.isArray(node.loraItems) ? node.loraItems : [];
+        let i = 0;
+        for (const it of list){
+            const key = (it && it.key) ? String(it.key).trim() : '';
+            if (!key || key.toLowerCase()==='none') { i++; continue; }
+            const base = `lora_${i}`;
+            const mkHidden = (w)=>{ if(!w) return; w.hidden = true; w.serialize = true; w.computeSize = ()=>[0,0]; w.draw = ()=>{}; };
+            const nameW = { name: base, type:'text', value: key };
+            const onW = { name: base+'_on', type:'number', value: it.on===false?0:1 };
+            const smW = { name: base+'_strength_model', type:'number', value: Number(it.sm)||1 };
+            const scW = { name: base+'_strength_clip', type:'number', value: Number(it.sc)||1 };
+            mkHidden(nameW); mkHidden(onW); mkHidden(smW); mkHidden(scW);
+            // 直接 splice 注入，保持顺序
+            node.widgets.splice(insertIndex, 0, nameW, onW, smW, scW);
+            insertIndex += 4;
+            i++;
+        }
+    }catch(err){ console.warn('[Hikaze] syncHiddenLoraWidgets failed:', err); }
+}
+
 function enhancePowerLoraLoaderNode(node){
     try{
         if (!node || node.comfyClass !== 'HikazePowerLoraLoader') return;
@@ -714,13 +750,13 @@ function enhancePowerLoraLoaderNode(node){
         }catch(_){ }
         clearAllGroups(node);
         node.loraItems = migrate.length? migrate: [{ key:'', label:'None', sm:1, sc:1, on:true }];
-        // 添加面���部件
+        // 添加面板部件
         let panel = node.widgets.find(w=> w instanceof HikazeLoraPanelWidget);
         if (!panel){
             panel = new HikazeLoraPanelWidget('lora_panel', { itemsProvider: ()=> node.loraItems });
             node.widgets.push(panel);
         }
-        node.updateLoraPanel = ()=>{ if (panel){ panel.ensureHeight(); try { node.setDirtyCanvas(true,true); }catch(_){} try { if(node.onResize) node.onResize(node.size); }catch(_){} } };
+        node.updateLoraPanel = ()=>{ if (panel){ panel.ensureHeight(); syncHiddenLoraWidgets(node); try { node.setDirtyCanvas(true,true); }catch(_){} try { if(node.onResize) node.onResize(node.size); }catch(_){} } };
         node.updateLoraPanel();
         // 序列化覆盖
         const originalSerialize = node.serialize;
@@ -728,19 +764,13 @@ function enhancePowerLoraLoaderNode(node){
             const data = originalSerialize ? originalSerialize.call(this) : {};
             if (!data.inputs) data.inputs = {};
             for (const k of Object.keys(data.inputs)) if (k.startsWith('lora_')) delete data.inputs[k];
-            let idx=0; for (const it of (this.loraItems||[])){ const key=String(it.key||'').trim(); if(!key || key==='none') continue; data.inputs[`lora_${idx}`]=key; data.inputs[`lora_${idx}_on`]=true; data.inputs[`lora_${idx}_strength_model`]=Number(it.sm)||1; data.inputs[`lora_${idx}_strength_clip`]=Number(it.sc)||1; idx++; }
+            let idx=0; for (const it of (this.loraItems||[])){ const key=String(it.key||'').trim(); if(!key || key==='none') continue; data.inputs[`lora_${idx}`]=key; data.inputs[`lora_${idx}_on`]= (it.on===false?0:1); data.inputs[`lora_${idx}_strength_model`]=Number(it.sm)||1; data.inputs[`lora_${idx}_strength_clip`]=Number(it.sc)||1; idx++; }
             return data;
         };
         const originalConfigure = node.configure;
-        node.configure = function(info){ if (originalConfigure) originalConfigure.apply(this, arguments); if (info && info.inputs){ const groups={}; for (const [k,v] of Object.entries(info.inputs)){ const m=k.match(/^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/); if(!m) continue; const i=parseInt(m[1],10); if(!groups[i]) groups[i]={sm:1,sc:1,on:true}; const sub=m[2]; if(!sub){ groups[i].key=v; groups[i].label=v; } else if(sub==='strength_model'){ groups[i].sm=Number(v)||1;} else if(sub==='strength_clip'){ groups[i].sc=Number(v)||1;} else if(sub==='on'){ groups[i].on=!!v; } } node.loraItems=Object.keys(groups).sort((a,b)=>a-b).map(i=>groups[i]); if(!node.loraItems.length) node.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; node.updateLoraPanel&&node.updateLoraPanel(); } };
+        node.configure = function(info){ if (originalConfigure) originalConfigure.apply(this, arguments); if (info && info.inputs){ const groups={}; for (const [k,v] of Object.entries(info.inputs)){ const m=k.match(/^lora_(\d+)(?:_(on|strength_model|strength_clip))?$/); if(!m) continue; const i=parseInt(m[1],10); if(!groups[i]) groups[i]={sm:1,sc:1,on:true}; const sub=m[2]; if(!sub){ groups[i].key=v; groups[i].label=v; } else if(sub==='strength_model'){ groups[i].sm=Number(v)||1;} else if(sub==='strength_clip'){ groups[i].sc=Number(v)||1;} else if(sub==='on'){ groups[i].on= !!v && v!==0 && v!=='0'; } } this.loraItems=Object.keys(groups).sort((a,b)=>a-b).map(i=>groups[i]); if(!this.loraItems.length) this.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; this.updateLoraPanel&&this.updateLoraPanel(); } };
         const originalComputeSize = node.computeSize;
-        node.computeSize = function(){
-            const base = originalComputeSize ? originalComputeSize.call(this) : [220,120];
-            // 仅调整最小宽度，不重复叠加高度（LiteGraph 已经包含 widget 高度）
-            const pnl = this.widgets.find(w=> w instanceof HikazeLoraPanelWidget);
-            if (pnl){ base[0] = Math.max(base[0], 380); }
-            return base;
-        };
+        node.computeSize = function(){ const base = originalComputeSize ? originalComputeSize.call(this) : [220,120]; const pnl = this.widgets.find(w=> w instanceof HikazeLoraPanelWidget); if (pnl){ base[0] = Math.max(base[0], 380); } return base; };
         // 选择按钮
         if (!node.widgets.some(w=> w.name==='choose_models')){
             const btn = node.addWidget && node.addWidget('button','choose_models', t('mm.btn.chooseModelEllipsis'), ()=>{ const requestId='sel_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); const selectedItems=currentSelectedItemsForPreselect(node); const overlay=openModelSelector({kind:'lora', requestId, selectedItems}); HikazeManager.pending.set(requestId,{ node, overlay, mode:'replace'}); }, { serialize:false });
@@ -798,9 +828,9 @@ console.log('[Hikaze] Extension script loaded');
 function setupMessageListener(){
     window.addEventListener('message', (ev)=>{ const data = ev && ev.data; if(!data) return; if(data.type==='hikaze-mm-close'){ const ov=HikazeManager.modalWindow; if(ov && typeof ov.__hikazeClose==='function') ov.__hikazeClose(); else if(ov&&ov.parentNode) ov.parentNode.removeChild(ov); HikazeManager.modalWindow=null; return; }
         if(data.type==='hikaze-mm-cancel'){ const requestId=data.requestId; if(requestId && HikazeManager.pending.has(requestId)){ try{ const ctx=HikazeManager.pending.get(requestId); const overlay=ctx&&ctx.overlay; if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay);} finally { HikazeManager.pending.delete(requestId);} } return; }
-        if(data.type!=='hikaze-mm-select') return; const { requestId, payload } = data; const ctx = HikazeManager.pending.get(requestId); if(!ctx) return; try{ const { node, wName, wPath, overlay, mode } = ctx; if(payload && (payload.kind==='lora'||payload.kind==='loras') && Array.isArray(payload.items) && node && node.comfyClass==='HikazePowerLoraLoader'){ const opMode=(payload.mode==='append'||mode==='append')?'append':'replace'; const incoming=(payload.items||[]).map(it=>({ key:normalizeLoraKey(it && (it.value||it.label||'')), label:String((it && (it.label||it.value))||''), sm:(typeof it.sm==='number'?it.sm:1), sc:(typeof it.sc==='number'?it.sc:1), on:true })).filter(it=>it.key); if(opMode==='replace') node.loraItems=[]; if(!Array.isArray(node.loraItems)) node.loraItems=[]; const existing=new Set(node.loraItems.map(i=>i.key)); for(const it of incoming){ if(opMode==='append' && existing.has(it.key)) continue; node.loraItems.push(it);} if(!node.loraItems.length) node.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; node.updateLoraPanel && node.updateLoraPanel(); try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} try { if(node.onResize) node.onResize(node.size);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay); return; }
-            const pathVal = payload && payload.value ? String(payload.value):''; const nameVal = payload && (payload.label||payload.value)? String(payload.label||payload.value):''; if(wPath){ try { wPath.value=pathVal;}catch(_){} try { if(wPath.inputEl) wPath.inputEl.value=pathVal;}catch(_){} } if(wName){ try { wName.value=nameVal;}catch(_){} try { if(wName.inputEl) wName.inputEl.value=nameVal;}catch(_){} }
-            try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        } finally { HikazeManager.pending.delete(requestId); }
+        if(data.type!=='hikaze-mm-select') return; const { requestId, payload } = data; const ctx = HikazeManager.pending.get(requestId); if(!ctx) return; try{ const { node, wName, wPath, overlay, mode } = ctx; if(payload && (payload.kind==='lora'||payload.kind==='loras') && Array.isArray(payload.items) && node && node.comfyClass==='HikazePowerLoraLoader'){ const opMode=(payload.mode==='append'||mode==='append')?'append':'replace'; const incoming=(payload.items||[]).map(it=>({ key:normalizeLoraKey(it && (it.value||it.label||'')), label:String((it && (it.label||it.value))||''), sm:(typeof it.sm==='number'?it.sm:1), sc:(typeof it.sc==='number'?it.sc:1), on:true })).filter(it=>it.key); if(opMode==='replace') node.loraItems=[]; if(!Array.isArray(node.loraItems)) node.loraItems=[]; const existing=new Set(node.loraItems.map(i=>i.key)); for(const it of incoming){ if(opMode==='append' && existing.has(it.key)) continue; node.loraItems.push(it);} if(!node.loraItems.length) node.loraItems=[{key:'',label:'None',sm:1,sc:1,on:true}]; node.updateLoraPanel && node.updateLoraPanel(); syncHiddenLoraWidgets(node); try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} try { if(node.onResize) node.onResize(node.size);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay); return; }
+        const pathVal = payload && payload.value ? String(payload.value):''; const nameVal = payload && (payload.label||payload.value)? String(payload.label||payload.value):''; if(wPath){ try { wPath.value=pathVal;}catch(_){} try { if(wPath.inputEl) wPath.inputEl.value=pathVal;}catch(_){} } if(wName){ try { wName.value=nameVal;}catch(_){} try { if(wName.inputEl) wName.inputEl.value=nameVal;}catch(_){} }
+        try { node.setDirtyCanvas(true,true);}catch(_){} try { app.graph.setDirtyCanvas(true,true);}catch(_){} if(overlay && typeof overlay.__hikazeClose==='function') overlay.__hikazeClose(); else if(overlay&&overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    } finally { HikazeManager.pending.delete(requestId); }
     });
 }
