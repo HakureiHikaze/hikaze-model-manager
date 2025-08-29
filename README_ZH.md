@@ -1,5 +1,7 @@
 # Hikaze Model Manager
 
+**本文档完全由Copilot写就**
+
 [![English](https://img.shields.io/badge/README-English-blue)](README.md)
 
 一个为 ComfyUI 设计的综合模型管理插件，提供直观的界面来组织、选择和管理 AI 模型，具备高级工作流集成功能。
