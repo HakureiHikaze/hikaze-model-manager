@@ -1,5 +1,6 @@
 # Hikaze Model Manager
 **This document was written by Copilot**
+
 [![中文](https://img.shields.io/badge/README-中文-red)](README_ZH.md)
 
 A comprehensive model management plugin for ComfyUI that provides an intuitive interface for organizing, selecting, and managing AI models with advanced features for workflow integration.
