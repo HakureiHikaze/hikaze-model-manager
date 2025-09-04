@@ -24,9 +24,18 @@
 
     <main class="content">
       <section class="model-list">
-        <div class="view-switch">
-          <button id="cardViewBtn" class="active" data-i18n="mm.view.card">mm.view.card</button>
-          <button id="listViewBtn" data-i18n="mm.view.list">mm.view.list</button>
+        <div class="list-toolbar">
+          <div class="view-switch">
+            <button id="cardViewBtn" class="active" data-i18n="mm.view.card">mm.view.card</button>
+            <button id="listViewBtn" data-i18n="mm.view.list">mm.view.list</button>
+          </div>
+          <div class="selector-actions">
+            <label class="filter-selected" style="display: none;">
+              <input type="checkbox" id="filterSelectedCheckbox" />
+              <span data-i18n="mm.selector.filterSelected">mm.selector.filterSelected</span>
+            </label>
+            <button id="clearSelectionBtn" class="btn" style="display: none;" data-i18n="mm.selector.clear">mm.selector.clear</button>
+          </div>
         </div>
         <div id="modelsContainer" class="cards"></div>
         <footer class="bulk-actions">

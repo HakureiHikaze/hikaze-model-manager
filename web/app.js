@@ -562,14 +562,21 @@
       state.selector.selectedCache.delete(m.id);
     };
     const createStrengthControls = (m)=>{
-      const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
+      const wrap = h('div', {class:'lora-strengths-wrap', onclick:stop});
       const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
       const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
+
+      const modelRow = h('div', {class:'lora-strengths'});
       const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.model'));
       const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
+      modelRow.append(smLab, sm);
+
+      const clipRow = h('div', {class:'lora-strengths'});
       const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.clip'));
       const sc = num('sc', s.sc, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sc=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
-      wrap.append(smLab, sm, scLab, sc);
+      clipRow.append(scLab, sc);
+
+      wrap.append(modelRow, clipRow);
       return wrap;
     };
     modelsToRender.forEach(m=>{
@@ -868,7 +875,7 @@
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
     const mode = (ev && ev.shiftKey) ? 'append' : 'replace';
     if (kind === 'lora' || kind === 'loras'){
-      const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
+      const picked = Array.from(state.selector.selectedCache.values());
       if (!picked.length) { alert(t('mm.selector.needLora')); return; }
       const items = picked.map(m=>{
         const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
