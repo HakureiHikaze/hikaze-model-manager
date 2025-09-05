@@ -562,16 +562,23 @@
       state.selector.selectedCache.delete(m.id);
     };
     const createStrengthControls = (m)=>{
-      const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}});
+      const wrap = h('div', {class:'lora-strengths', style:{display:'flex', gap:'6px', marginTop: state.viewMode==='cards'?'6px':'0'}, onclick: (e) => e.stopPropagation()});
       const s = state.selector.strengths.get(m.id) || { sm: 1.0, sc: 1.0 };
-      const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), style:{width:'72px'}, oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
-      const smLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.model'));
+      // 移除输入框的内联宽度样式，交由 CSS 控制
+      const num = (name, val, onchg)=> h('input', {type:'number', step:'0.05', min:'-10', max:'10', value: String(val), oninput:(e)=>{ stop(e); const v=parseFloat(e.target.value); if (isFinite(v)) onchg(v); }});
+
       const sm = num('sm', s.sm, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sm=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
-      const scLab = h('span', {class:'tag', style:{background:'#333', color:'#ddd'}}, t('mm.lora.clip'));
       const sc = num('sc', s.sc, (v)=>{ const cur=state.selector.strengths.get(m.id)||{sm:1,sc:1}; cur.sc=Math.max(-10, Math.min(10, v)); state.selector.strengths.set(m.id, cur); });
-      wrap.append(smLab, sm, scLab, sc);
+
+      // 为每个 input 创建一个带 data-label 的父容器
+      const smWrap = h('div', {class:'input-with-label', dataset:{label: t('mm.lora.model')}, style:{flex:'1'}}, sm);
+      const scWrap = h('div', {class:'input-with-label', dataset:{label: t('mm.lora.clip')}, style:{flex:'1'}}, sc);
+
+      // 不再添加 smLab 和 scLab，而是添加新的包裹容器
+      wrap.append(smWrap, scWrap);
       return wrap;
     };
+
     modelsToRender.forEach(m=>{
       const tags = (m.tags||[]).filter(t=>t!==m.type);
       const isSel = !!(state.selectedModel && state.selectedModel.id === m.id);
@@ -724,7 +731,11 @@
 
     // Submit only on Enter/Space/Comma; Backspace bulk clear is not supported
     input.addEventListener('keydown', (e)=>{
-      if (e.key==='Enter' || e.key===' ' || e.key===','){ e.preventDefault(); commitFromInput(); suggestWrap.classList.add('hidden'); }
+      if (e.key==='Enter' || e.key===' ' || e.key===','){
+        e.preventDefault();
+        commitFromInput();
+        suggestWrap.classList.add('hidden');
+      }
     });
     input.addEventListener('input', ()=> refreshSuggest());
     input.addEventListener('blur', ()=> setTimeout(()=>{ suggestWrap.classList.add('hidden'); }, 150));
@@ -868,8 +879,8 @@
     const kind = (state.selector.kind || 'checkpoint').toLowerCase();
     const mode = (ev && ev.shiftKey) ? 'append' : 'replace';
     if (kind === 'lora' || kind === 'loras'){
-      const picked = state.models.filter(m=> state.selector.selectedIds.has(m.id));
-      if (!picked.length) { alert(t('mm.selector.needLora')); return; }
+      const picked = Array.from(state.selector.selectedCache.values());
+      //if (!picked.length) { alert(t('mm.selector.needLora')); return; }
       const items = picked.map(m=>{
         const base = (m.path ? (m.path.split(/[\\\/]/).pop()||'') : (m.name||''));
         const value = (m && m.lora_name) ? m.lora_name : base; // prefer relative name
@@ -925,7 +936,6 @@
       bind(el.confirmBtn, 'click', (e)=> sendSelection(e));
       document.addEventListener('keydown', (e)=>{
         if (e.key === 'Enter'){
-          e.preventDefault();
           sendSelection(e);
         }
       });
@@ -1020,7 +1030,7 @@
         if (kind === 'checkpoint' || kind === 'checkpoints') {
           can = !!(state.selectedModel && (state.selectedModel.ckpt_name || state.selectedModel.path));
         } else if (kind === 'lora' || kind === 'loras') {
-          can = !!(state.selector.selectedIds && state.selector.selectedIds.size > 0);
+          can = true//!!(state.selector.selectedIds && state.selector.selectedIds.size > 0);
         } else {
           can = has;
         }

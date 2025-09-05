@@ -23,7 +23,7 @@
     </header>
 
     <main class="content">
-      <section class="model-list">
+      <div class="left-pane">
         <div class="view-switch">
           <button id="clearSelectionBtn" class="btn" data-i18n="mm.btn.clearSelection">mm.btn.clearSelection</button>
           <label class="filter-selected" style="margin:0 12px;display:flex;align-items:center;gap:4px;">
@@ -36,8 +36,11 @@
             <button id="confirmBtn" data-i18n="mm.btn.confirm">mm.btn.confirm</button>
           </div>
         </div>
+        <section class="model-list">
         <div id="modelsContainer" class="cards"></div>
       </section>
+      </div>
+
 
       <aside class="model-detail" id="modelDetail">
         <div class="preview" id="detailImage"></div>

@@ -12,8 +12,16 @@
 .tag-item.active{background:#1f6feb;border-color:#388bfd}
 .tag-item.disabled{opacity:.4;cursor:not-allowed}
 .content{display:flex;flex:1;min-height:0}
-.model-list{flex:2;padding:12px;overflow:auto}
-.view-switch{display:flex;gap:6px;margin-bottom:8px}
+.left-pane{
+  flex: 2;
+  padding: 12px;
+  display: flex;
+  flex-direction: column; /* 修改：设置为垂直方向 */
+  gap: 8px; /* 新增：在子元素间添加间距 */
+  min-height: 0; /* 新增：确保在 flex 布局中正确计算高度 */
+}
+.model-list{overflow-y: auto;flex-grow: 1;min-height: 0;}
+.view-switch{display:flex;gap:6px;flex-shrink: 0;padding-bottom: 8px;border-bottom: 1px solid #2d333b;}
 .view-switch button{padding:4px 8px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9}
 .view-switch .active{background:#1f6feb;border-color:#388bfd}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
@@ -87,3 +95,28 @@
 /* Non-agent edits */
 .detailName{color:#e6edf3 !important;}
 .tagsMode{color:#e6edf3 !important;}
+
+
+.lora-strengths input {
+  width: 100%;
+  padding: 6px 45px 6px 8px; /* 增加右内边距，为标签留出空间 */
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #0f141a;
+  color: #c9d1d9;
+}
+
+.input-with-label {
+    position: relative;
+}
+
+.input-with-label::after {
+    content: attr(data-label);
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #8b949e; /* 使用一个柔和的颜色 */
+    pointer-events: none; /* 确保标签不会干扰鼠标点击输入框 */
+    font-size: 13px;
+}
