@@ -20,8 +20,11 @@
 .view-switch button{padding:4px 8px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9}
 .view-switch .active{background:#1f6feb;border-color:#388bfd}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;flex:1;overflow:auto;padding:2px}
-.card{position:relative;/*min-height:160px;*/aspect-ratio:3/4;border:1px solid #30363d;border-radius:10px;overflow:hidden;background:#11161c;background-size:cover;background-position:center;transition:border-color .15s ease, box-shadow .15s ease}
-.card:hover{border-color:#388bfd}
+.card{position:relative;/*min-height:160px;*/aspect-ratio:3/4;border:1px solid #30363d;border-radius:10px;overflow:hidden;background:#11161c;background-size:cover;background-position:center;transition:border-color .15s ease, box-shadow .15s ease;min-height:260px}
+/* 当浏览器不支持 aspect-ratio 时使用固定高度回退，防止网格塌陷重叠 */
+@supports not (aspect-ratio: 3/4){
+  .card{height:300px}
+}
 /* Green highlight: included (picked) */
 .card.picked{border-color:#2ea043;box-shadow:0 0 0 2px rgba(46,160,67,.35) inset}
 .card.selected{border-color:#1f6feb;box-shadow:0 0 0 2px rgba(31,111,235,.35) inset}

@@ -529,14 +529,27 @@
       append = false;
     }
 
-    // 预选排序 -> 改为所有已选项排序
+    // 统一已选项排序：
+    // 1) 多选（LoRA）：所有选中项按选择顺序（Set 插入顺序）置前
+    // 2) 单选（包括 selector checkpoint 与管理器普通模式）：当前选中模型置前
     if (isLoraSelector && state.selector.selectedIds.size){
-      const pre = [], rest = [];
-      for (const m of baseList){
-        (state.selector.selectedIds.has(m.id) ? pre : rest).push(m);
-      }
-      baseList = pre.concat(rest);
+      const order = new Map(); let idx = 0; state.selector.selectedIds.forEach(id=>{ order.set(id, idx++); });
+      const picked = []; const rest = [];
+      for (const m of baseList){ (order.has(m.id)? picked : rest).push(m); }
+      // 保持 picked 内部按选择顺序
+      picked.sort((a,b)=> order.get(a.id) - order.get(b.id));
+      baseList = picked.concat(rest);
       append = false;
+    } else if (state.selectedModel){
+      const selId = state.selectedModel.id;
+      // 只有当第一项不是选中项时才调整，避免无谓重排影响滚动位置
+      if (baseList.length && baseList[0].id !== selId){
+        const selIdx = baseList.findIndex(m=> m.id === selId);
+        if (selIdx > 0){
+          baseList = [baseList[selIdx]].concat(baseList.slice(0, selIdx), baseList.slice(selIdx+1));
+          append = false;
+        }
+      }
     }
 
     if (!append) el.modelsContainer.innerHTML = '';
@@ -592,7 +605,7 @@
             state.originalDetail = JSON.parse(JSON.stringify(m));
             updateActionsState();
             renderDetail();
-            renderModels(); // Re-render all to update selection styles
+            renderModels(); // Re-render all to update selection styles (also re-run ordering)
           } else {
             selectModel(m);
           }
@@ -607,7 +620,7 @@
             if (on) includeModel(m); else removeModel(m);
             updateActionsState();
             // If just unchecked while card is highlighted, keep right panel content to match "most recent selection" behavior
-            renderModels(); // Re-render all
+            renderModels(); // Re-render all (ordering + styles)
           }});
           topChildren.push(h('span', {style:{marginLeft:'auto'}}, chk));
         }
@@ -632,7 +645,7 @@
             state.originalDetail = JSON.parse(JSON.stringify(m));
             updateActionsState();
             renderDetail();
-            renderModels(); // Re-render all
+            renderModels(); // Re-render all (ordering + styles)
           } else {
             selectModel(m);
           }
