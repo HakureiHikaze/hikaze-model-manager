@@ -89,7 +89,10 @@ class HikazeIsolatedWidget {
     }
 }
 
-// 新：画布绘制面板（替代之前 DOM overlay 实现）
+/**
+ * Custom LoRA Panel Widget that displays a list of LoRAs in a table format
+ * Dynamically adjusts its height based on the number of items, up to a maximum height
+ */
 class HikazeLoraPanelWidget extends HikazeIsolatedWidget {
     constructor(name, options = {}){
         super(name, { height: 140 });
@@ -170,7 +173,10 @@ class HikazeLoraPanelWidget extends HikazeIsolatedWidget {
     }
 }
 
-// Custom LoRA Row Widget that renders as table format
+/**
+ * Custom LoRA Row Widget that displays a single LoRA entry in a table-like format
+ * with columns for name, model strength, clip strength, toggle switch, and remove button
+ */
 class HikazeLoraRowWidget extends HikazeIsolatedWidget {
     constructor(name, value = null) {
         super(name, { height: 30 });

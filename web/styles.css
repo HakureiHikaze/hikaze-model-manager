@@ -12,7 +12,7 @@
 .tag-item.active{background:#1f6feb;border-color:#388bfd}
 .tag-item.disabled{opacity:.4;cursor:not-allowed}
 .content{display:flex;flex:1;min-height:0}
-.model-list{flex:2;padding:12px;overflow:hidden;display:flex;flex-direction:column}
+.model-list{flex:2;padding:12px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .list-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px}
 .selector-actions{display:flex;align-items:center;gap:8px}
 .filter-selected{display:flex;align-items:center;gap:4px;cursor:pointer;color:#c9d1d9}

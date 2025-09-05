@@ -529,11 +529,11 @@
       append = false;
     }
 
-    // 预选排序
-    if (isLoraSelector && state.selector.preselectedIds.size){
+    // 预选排序 -> 改为所有已选项排序
+    if (isLoraSelector && state.selector.selectedIds.size){
       const pre = [], rest = [];
       for (const m of baseList){
-        (state.selector.preselectedIds.has(m.id) ? pre : rest).push(m);
+        (state.selector.selectedIds.has(m.id) ? pre : rest).push(m);
       }
       baseList = pre.concat(rest);
       append = false;
