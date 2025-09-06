@@ -1021,8 +1021,8 @@
     if (!exists(el.saveBtn, 'saveBtn') || !exists(el.revertBtn, 'revertBtn')) return;
     const has = !!state.selectedModel;
     if (state.selector.on){
-      el.saveBtn.style.display = 'none';
-      el.revertBtn.style.display = 'none';
+      //el.saveBtn.style.display = 'none';
+      //el.revertBtn.style.display = 'none';
       if (el.confirmBtn){
         el.confirmBtn.style.display = '';
         const kind = String(state.selector.kind||'').toLowerCase();
